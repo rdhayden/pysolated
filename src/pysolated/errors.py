@@ -25,3 +25,18 @@ class AgentExecutionError(PysolatedError):
         self.stdout_tail = stdout_tail
         detail = stderr.strip() or stdout_tail.strip() or "(no output captured)"
         super().__init__(f"agent exited with code {exit_code}: {detail}")
+
+
+class IdleTimeoutError(PysolatedError):
+    """The agent produced no output for longer than the configured idle window.
+
+    Raised before any completion signal has been seen — once a signal appears,
+    the completion-grace window takes over and succeeds-with-warning on expiry.
+    """
+
+    def __init__(self, timeout_seconds: float, stdout_tail: str = "") -> None:
+        self.timeout_seconds = timeout_seconds
+        self.stdout_tail = stdout_tail
+        super().__init__(
+            f"agent produced no output for {timeout_seconds:g}s (idle timeout)"
+        )

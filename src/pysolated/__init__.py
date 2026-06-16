@@ -9,6 +9,7 @@ from .agents import (
     parse_session_usage,
     parse_stream_line,
 )
+from .completion import match_completion_signal
 from .core import (
     AgentCommandOptions,
     AgentProvider,
@@ -25,8 +26,14 @@ from .core import (
     Usage,
 )
 from .display import TerminalDisplay
-from .errors import AgentExecutionError, PysolatedError
-from .orchestrator import run
+from .errors import AgentExecutionError, IdleTimeoutError, PysolatedError
+from .orchestrator import (
+    DEFAULT_COMPLETION_SIGNAL,
+    DEFAULT_COMPLETION_TIMEOUT_SECONDS,
+    DEFAULT_IDLE_TIMEOUT_SECONDS,
+    DEFAULT_IDLE_WARNING_INTERVAL_SECONDS,
+    run,
+)
 from .sandboxes import NoSandbox, no_sandbox
 
 __all__ = [
@@ -44,9 +51,15 @@ __all__ = [
     "AgentProvider",
     "SandboxProvider",
     "Display",
-    # Pure parsers
+    # Pure parsers / matchers
     "parse_stream_line",
     "parse_session_usage",
+    "match_completion_signal",
+    # Defaults
+    "DEFAULT_COMPLETION_SIGNAL",
+    "DEFAULT_IDLE_TIMEOUT_SECONDS",
+    "DEFAULT_COMPLETION_TIMEOUT_SECONDS",
+    "DEFAULT_IDLE_WARNING_INTERVAL_SECONDS",
     # Value types
     "RunResult",
     "Usage",
@@ -61,4 +74,5 @@ __all__ = [
     # Errors
     "PysolatedError",
     "AgentExecutionError",
+    "IdleTimeoutError",
 ]
