@@ -161,6 +161,37 @@ asyncio.run(main())
   sets the event so the orchestrator cancels cleanly and the CLI exits with
   status `130` instead of tearing through asyncio with a `KeyboardInterrupt`.
 
+### Agent failure surfacing
+
+When the agent subprocess exits non-zero, `run()` raises `AgentExecutionError`
+— a structured exception from the library's hierarchy, carrying the exit code
+and the *tail* of stderr/stdout most likely to explain the crash:
+
+```python
+from pysolated import AgentExecutionError, run, claude_code, no_sandbox
+
+try:
+    await run(
+        agent=claude_code("claude-opus-4-7"),
+        sandbox=no_sandbox(),
+        prompt="...",
+    )
+except AgentExecutionError as exc:
+    print(exc.exit_code)     # e.g. 127
+    print(exc.stderr_tail)   # last lines of stderr
+    print(exc.stdout_tail)   # last lines of stream-json output
+```
+
+- `exit_code` is the subprocess exit status.
+- `stderr_tail` / `stdout_tail` are truncated to the last ~50 lines so the
+  exception stays readable even when the agent emitted megabytes of
+  stream-json before crashing.
+- `str(exc)` includes the exit code and the relevant tail — what the CLI
+  echoes to the user (exit `1`).
+- Distinct from `IdleTimeoutError` (a *stuck* agent) and
+  `StructuredOutputError` (a malformed payload); each names its own failure
+  mode so callers can branch on the cause.
+
 ### Structured output
 
 A **structured output** is a schema-validated payload the agent emits inside

@@ -106,6 +106,35 @@ def test_cli_sigint_sets_abort_signal_and_exits_130(monkeypatch: Any) -> None:
     assert isinstance(captured["signal"], asyncio.Event)
 
 
+def test_cli_agent_execution_error_exits_1_with_diagnostic_on_stderr(
+    monkeypatch: Any,
+) -> None:
+    """A crashed agent yields exit 1 and prints the stderr/output tail.
+
+    Without the tail on stderr the user just sees "Iterations: 1 / 1" or a
+    bare traceback — neither tells them why the agent died.
+    """
+    from pysolated.errors import AgentExecutionError
+
+    async def crashing_engine(**kwargs: Any) -> RunResult:
+        raise AgentExecutionError(
+            exit_code=42,
+            stderr="ENOENT: cannot find 'claude' binary",
+            stdout_tail="",
+        )
+
+    monkeypatch.setattr(cli_module, "run_engine", crashing_engine)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["run", "--prompt", "go"])
+    assert result.exit_code == 1, result.output
+    # The tail must reach the user (typer.echo with err=True; CliRunner mixes
+    # stdout+stderr into `output` by default).
+    assert "ENOENT" in result.output
+    assert "claude" in result.output
+    assert "42" in result.output
+
+
 def test_cli_without_log_file_omits_flag(monkeypatch: Any) -> None:
     captured: dict = {}
     monkeypatch.setattr(

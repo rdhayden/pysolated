@@ -7,6 +7,27 @@ it (prompt-expansion errors, idle-timeout errors, structured-output errors).
 
 from __future__ import annotations
 
+# Tail size for crash-diagnosis fields. Crash explanations live at the end of
+# the stream (last log line, last stack frame), so the last N lines are kept
+# and the rest is discarded. Picked to comfortably fit a stack trace or a few
+# lines of agent prose while staying small enough to read in one terminal.
+_MAX_TAIL_LINES = 50
+
+
+def _tail(text: str, max_lines: int = _MAX_TAIL_LINES) -> str:
+    """Return the last `max_lines` lines of `text`, preserving line order.
+
+    Returns the input unchanged when it already fits. The line count is what
+    matters here — crash output is line-oriented, and a per-byte cap would
+    cut stack frames mid-word.
+    """
+    if not text:
+        return text
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text
+    return "\n".join(lines[-max_lines:])
+
 
 class PysolatedError(Exception):
     """Base class for every error raised by pysolated."""
@@ -15,15 +36,21 @@ class PysolatedError(Exception):
 class AgentExecutionError(PysolatedError):
     """The agent subprocess exited with a non-zero status.
 
-    Carries the exit code plus a tail of stderr/stdout so the caller can
-    diagnose a crashed agent.
+    Carries the exit code plus the *tail* of stderr/stdout — the part most
+    likely to explain the crash. Long outputs are truncated to a fixed line
+    count so a developer sees the error message instead of scrolling through
+    megabytes of stream-json transcript.
     """
 
     def __init__(self, exit_code: int, stderr: str = "", stdout_tail: str = "") -> None:
         self.exit_code = exit_code
-        self.stderr = stderr
-        self.stdout_tail = stdout_tail
-        detail = stderr.strip() or stdout_tail.strip() or "(no output captured)"
+        self.stderr_tail = _tail(stderr)
+        self.stdout_tail = _tail(stdout_tail)
+        detail = (
+            self.stderr_tail.strip()
+            or self.stdout_tail.strip()
+            or "(no output captured)"
+        )
         super().__init__(f"agent exited with code {exit_code}: {detail}")
 
 
