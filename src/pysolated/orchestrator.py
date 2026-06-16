@@ -73,7 +73,8 @@ async def run(
     directory). `display` is the presentation / test-substitution seam.
 
     The loop stops early the moment a `completion_signal` substring appears in
-    the accumulated stdout. `idle_timeout_seconds` fails the run if no output
+    the agent's own assistant prose (tool inputs/outputs the agent reads are
+    never matched). `idle_timeout_seconds` fails the run if no output
     arrives; `completion_timeout_seconds` is the grace window that takes over
     once the signal is seen. Both are injected so tests can drive them with
     short, deterministic values.
@@ -160,6 +161,7 @@ async def _run_iteration(
     and a warning on the display.
     """
     accumulated: list[str] = []
+    agent_text: list[str] = []
     state: dict = {
         "matched_signal": None,
         "last_line_at": time.monotonic(),
@@ -174,10 +176,15 @@ async def _run_iteration(
         state["last_line_at"] = now
         state["warning_anchor_at"] = now
         for event in agent.parse_stream_line(line):
+            if isinstance(event, TextEvent):
+                agent_text.append(event.text)
             _dispatch_event(display, event)
+        # Match only against the agent's own prose — never tool inputs/outputs.
+        # Otherwise the agent merely reading a file that quotes the signal
+        # (this repo's README, source, and docs all do) would trip completion.
         if state["matched_signal"] is None:
             matched = match_completion_signal(
-                "\n".join(accumulated), completion_signals
+                "\n".join(agent_text), completion_signals
             )
             if matched is not None:
                 state["matched_signal"] = matched

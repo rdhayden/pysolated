@@ -64,7 +64,7 @@ The CLI is a thin Typer layer over the same `run()` engine. Flags:
 | `--permission-mode` | _(none)_ | Claude `--permission-mode`; mutually exclusive with skip-permissions. |
 | `--name` | _(none)_ | Optional name for the run, shown in the display. |
 | `--max-iterations` | `1` | Maximum agent invocations in the loop. |
-| `--completion-signal` | `<promise>COMPLETE</promise>` | Substring that ends the loop early. Repeat the flag to match any of several. |
+| `--completion-signal` | `<promise>COMPLETE</promise>` | Substring in the agent's own output that ends the loop early (tool inputs/outputs it reads are never matched). Repeat the flag to match any of several. |
 | `--idle-timeout` | `600` | Seconds without output before failing with an idle error. |
 | `--completion-timeout` | `60` | Grace seconds after the completion signal before forcing success. |
 

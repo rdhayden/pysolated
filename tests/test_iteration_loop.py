@@ -113,6 +113,16 @@ def _assistant(text: str) -> str:
     )
 
 
+def _tool_result(text: str) -> str:
+    """A stream-json line carrying tool output the agent *read* (not its prose)."""
+    return json.dumps(
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "content": text}]},
+        }
+    )
+
+
 async def test_default_max_iterations_is_one() -> None:
     sandbox = ScriptedSandbox([[_assistant("hi")]])
     agent = ScriptedAgent()
@@ -181,6 +191,39 @@ async def test_completion_signal_list_reports_which_one_fired() -> None:
     )
     assert result.iterations == 1
     assert result.completion_signal == "ALL-DONE"
+
+
+async def test_completion_signal_ignores_tool_output() -> None:
+    """The signal must match only the agent's own prose, never tool output.
+
+    Regression: matching ran over the raw stream, so the agent merely *reading*
+    a file that quotes the signal (this repo's README/source/docs all do) tripped
+    completion before any work was done. Here a tool result carries the signal
+    while the assistant prose never does — the loop must run to the end.
+    """
+    sandbox = ScriptedSandbox(
+        [
+            [
+                _assistant("reading the docs to get started"),
+                _tool_result("README says default is <promise>COMPLETE</promise>"),
+                _assistant("still working, not done yet"),
+            ],
+            [_assistant("second pass, still going")],
+        ]
+    )
+    agent = ScriptedAgent()
+    result = await run(
+        agent=agent,
+        sandbox=sandbox,
+        prompt="go",
+        display=RecordingDisplay(),
+        max_iterations=2,
+    )
+    assert result.iterations == 2  # never stopped early
+    assert result.completion_signal is None
+    assert len(agent.prompts) == 2
+    # The signal text is still present in raw stdout — we just don't match on it.
+    assert "<promise>COMPLETE</promise>" in result.stdout
 
 
 async def test_completion_signal_none_when_max_iterations_reached() -> None:
