@@ -11,8 +11,13 @@ import asyncio
 import typer
 
 from .agents import PermissionMode, claude_code
-from .errors import AgentExecutionError
-from .orchestrator import run as run_engine
+from .errors import AgentExecutionError, IdleTimeoutError
+from .orchestrator import (
+    DEFAULT_COMPLETION_SIGNAL,
+    DEFAULT_COMPLETION_TIMEOUT_SECONDS,
+    DEFAULT_IDLE_TIMEOUT_SECONDS,
+    run as run_engine,
+)
 from .sandboxes import no_sandbox
 
 app = typer.Typer(add_completion=False, help="Orchestrate Claude Code via run().")
@@ -42,10 +47,32 @@ def run_command(
         help="Claude --permission-mode (mutually exclusive with skip-permissions).",
     ),
     name: str | None = typer.Option(None, "--name", help="Optional name for the run."),
+    max_iterations: int = typer.Option(
+        1, "--max-iterations", min=1, help="Max agent invocations in the loop."
+    ),
+    completion_signal: list[str] = typer.Option(
+        [DEFAULT_COMPLETION_SIGNAL],
+        "--completion-signal",
+        help="Substring(s) that end the loop early. Repeat for multiple candidates.",
+    ),
+    idle_timeout: float = typer.Option(
+        DEFAULT_IDLE_TIMEOUT_SECONDS,
+        "--idle-timeout",
+        help="Seconds without output before failing with an idle error.",
+    ),
+    completion_timeout: float = typer.Option(
+        DEFAULT_COMPLETION_TIMEOUT_SECONDS,
+        "--completion-timeout",
+        help="Grace seconds after the completion signal before forcing success.",
+    ),
 ) -> None:
-    """Drive Claude Code once on the host and print the result."""
+    """Drive Claude Code on the host and print the result."""
     agent = claude_code(model, permission_mode=permission_mode)  # type: ignore[arg-type]
     sandbox = no_sandbox()
+
+    signal_arg: str | list[str] = (
+        completion_signal[0] if len(completion_signal) == 1 else completion_signal
+    )
 
     try:
         result = asyncio.run(
@@ -55,15 +82,27 @@ def run_command(
                 prompt=prompt,
                 cwd=cwd,
                 name=name,
+                max_iterations=max_iterations,
+                completion_signal=signal_arg,
+                idle_timeout_seconds=idle_timeout,
+                completion_timeout_seconds=completion_timeout,
             )
         )
     except KeyboardInterrupt:  # pragma: no cover - interactive abort
         typer.echo("Aborted.", err=True)
         raise typer.Exit(code=130)
-    except AgentExecutionError as exc:
+    except (AgentExecutionError, IdleTimeoutError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)
 
+    typer.echo(
+        f"Iterations: {result.iterations} / {max_iterations}; "
+        f"completion signal: {result.completion_signal or '(none)'}"
+    )
+    if result.commits:
+        typer.echo("Commits: " + ", ".join(result.commits))
+    else:
+        typer.echo("Commits: (none)")
     if result.usage is not None:
         typer.echo(
             f"Tokens — in: {result.usage.input_tokens}, "

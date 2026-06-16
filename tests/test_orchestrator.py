@@ -64,8 +64,12 @@ class FakeSandbox:
         on_line: Callable[[str], None] | None = None,
     ) -> ExecResult:
         self.exec_calls.append({"argv": argv, "stdin": stdin, "cwd": cwd})
-        if argv[:2] == ["git", "rev-parse"]:
+        if argv[:2] == ["git", "rev-parse"] and "--abbrev-ref" in argv:
             return ExecResult(exit_code=0, stdout=f"{self._branch}\n", stderr="")
+        if argv[:2] == ["git", "rev-parse"]:
+            return ExecResult(exit_code=0, stdout="deadbeef\n", stderr="")
+        if argv[:2] == ["git", "rev-list"]:
+            return ExecResult(exit_code=0, stdout="", stderr="")
         for line in self._lines:
             if on_line is not None:
                 on_line(line)

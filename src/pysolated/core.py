@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # Stream events — the decoded output of one agent stream-json line.
@@ -185,3 +185,5 @@ class RunResult(BaseModel):
     stdout: str
     branch: str
     usage: Usage | None = None
+    completion_signal: str | None = None
+    commits: list[str] = Field(default_factory=list)
