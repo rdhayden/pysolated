@@ -16,6 +16,12 @@ def _assistant_with_usage(usage: dict, text: str = "hi") -> str:
     )
 
 
+def _result_with_usage(usage: dict) -> str:
+    return json.dumps(
+        {"type": "result", "subtype": "success", "result": "done", "usage": usage}
+    )
+
+
 FULL_USAGE = {
     "input_tokens": 9,
     "cache_creation_input_tokens": 7174,
@@ -38,11 +44,25 @@ def test_last_assistant_usage_wins() -> None:
     assert result.output_tokens == 99
 
 
-def test_ignores_trailing_non_assistant_lines() -> None:
+def test_ignores_trailing_result_line_without_usage() -> None:
+    # A `result` line carrying no usage block falls back to the assistant line.
     content = "\n".join(
         [
             _assistant_with_usage(FULL_USAGE),
             json.dumps({"type": "result", "subtype": "success", "result": "done"}),
+        ]
+    )
+    assert parse_session_usage(content) == Usage(**FULL_USAGE)
+
+
+def test_result_usage_overrides_partial_assistant_snapshot() -> None:
+    # An assistant line's usage is the message_start snapshot: its output_tokens
+    # is only a partial count (here 1). The terminal result line carries the
+    # authoritative total (43) and must win.
+    content = "\n".join(
+        [
+            _assistant_with_usage({**FULL_USAGE, "output_tokens": 1}),
+            _result_with_usage(FULL_USAGE),
         ]
     )
     assert parse_session_usage(content) == Usage(**FULL_USAGE)

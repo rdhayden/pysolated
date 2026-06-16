@@ -99,11 +99,18 @@ _USAGE_FIELDS = (
 
 
 def parse_session_usage(content: str) -> Usage | None:
-    """Extract the last assistant message's token usage from streamed content.
+    """Extract the session's authoritative token usage from streamed content.
 
     Pure. Scans the accumulated stream-json content from the end and returns the
-    usage block of the last `assistant` line that carries a complete one, or
-    `None` when no usage was emitted.
+    first complete usage block it finds, or `None` when no usage was emitted.
+
+    The authoritative totals live on the terminal `result` line: an `assistant`
+    line's usage is the `message_start` snapshot, captured before the response
+    streamed, so its `output_tokens` is only a partial count (often 1). Scanning
+    from the end reaches the `result` line first, so its totals win; an
+    `assistant` line is the fallback for truncated streams that never reached a
+    `result`. The usage block sits at the top level on a `result` line and under
+    `message` on an `assistant` line.
     """
     for line in reversed(content.split("\n")):
         if not line.startswith("{"):
@@ -112,12 +119,15 @@ def parse_session_usage(content: str) -> Usage | None:
             obj = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
-        if not isinstance(obj, dict) or obj.get("type") != "assistant":
+        if not isinstance(obj, dict):
             continue
-        message = obj.get("message")
-        if not isinstance(message, dict):
+        if obj.get("type") == "result":
+            usage = obj.get("usage")
+        elif obj.get("type") == "assistant":
+            message = obj.get("message")
+            usage = message.get("usage") if isinstance(message, dict) else None
+        else:
             continue
-        usage = message.get("usage")
         if not isinstance(usage, dict):
             continue
         if all(isinstance(usage.get(name), int) for name in _USAGE_FIELDS):
