@@ -18,6 +18,7 @@ from .orchestrator import (
     DEFAULT_IDLE_TIMEOUT_SECONDS,
     run as run_engine,
 )
+from .prompts import PromptError
 from .sandboxes import no_sandbox
 
 app = typer.Typer(add_completion=False, help="Orchestrate Claude Code via run().")
@@ -36,7 +37,25 @@ def _root() -> None:
 
 @app.command(name="run")
 def run_command(
-    prompt: str = typer.Option(..., "--prompt", help="Inline prompt, sent verbatim."),
+    prompt: str | None = typer.Option(
+        None, "--prompt", help="Inline prompt, sent verbatim."
+    ),
+    prompt_file: str | None = typer.Option(
+        None,
+        "--prompt-file",
+        help=(
+            "Path to a prompt template; {{KEY}} placeholders are substituted "
+            "from --prompt-arg and !`cmd` is expanded via the sandbox."
+        ),
+    ),
+    prompt_arg: list[str] = typer.Option(
+        [],
+        "--prompt-arg",
+        help=(
+            "Argument as KEY=VALUE for a --prompt-file template. Repeatable. "
+            "Rejected when used with --prompt."
+        ),
+    ),
     model: str = typer.Option(DEFAULT_MODEL, "--model", help="Claude model to run."),
     cwd: str | None = typer.Option(
         None, "--cwd", help="Repo directory to anchor the run to."
@@ -67,6 +86,20 @@ def run_command(
     ),
 ) -> None:
     """Drive Claude Code on the host and print the result."""
+    if prompt is None and prompt_file is None:
+        typer.echo("error: pass either --prompt or --prompt-file.", err=True)
+        raise typer.Exit(code=2)
+    if prompt is not None and prompt_file is not None:
+        typer.echo(
+            "error: --prompt and --prompt-file are mutually exclusive.", err=True
+        )
+        raise typer.Exit(code=2)
+    try:
+        prompt_args = _parse_prompt_args(prompt_arg)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
     agent = claude_code(model, permission_mode=permission_mode)  # type: ignore[arg-type]
     sandbox = no_sandbox()
 
@@ -80,6 +113,8 @@ def run_command(
                 agent=agent,
                 sandbox=sandbox,
                 prompt=prompt,
+                prompt_file=prompt_file,
+                prompt_args=prompt_args or None,
                 cwd=cwd,
                 name=name,
                 max_iterations=max_iterations,
@@ -91,6 +126,9 @@ def run_command(
     except KeyboardInterrupt:  # pragma: no cover - interactive abort
         typer.echo("Aborted.", err=True)
         raise typer.Exit(code=130)
+    except PromptError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2)
     except (AgentExecutionError, IdleTimeoutError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)
@@ -112,6 +150,28 @@ def run_command(
         )
     else:
         typer.echo("Token usage: unavailable")
+
+
+def _parse_prompt_args(items: list[str]) -> dict[str, str]:
+    """Parse `KEY=VALUE` strings into a dict, raising on malformed entries.
+
+    Duplicate keys raise — repeating `--prompt-arg KEY=...` ambiguously is
+    almost always a mistake (which value wins?), so surface it loudly.
+    """
+    result: dict[str, str] = {}
+    for raw in items:
+        if "=" not in raw:
+            raise ValueError(
+                f"--prompt-arg must be KEY=VALUE (got {raw!r})"
+            )
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--prompt-arg KEY may not be empty (got {raw!r})")
+        if key in result:
+            raise ValueError(f"--prompt-arg {key!r} was supplied more than once")
+        result[key] = value
+    return result
 
 
 def main() -> None:  # pragma: no cover - console-script shim
