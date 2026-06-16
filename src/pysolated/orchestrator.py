@@ -40,6 +40,10 @@ from .core import (
 from .display import TerminalDisplay
 from .errors import AgentExecutionError, IdleTimeoutError
 from .prompts import resolve_prompt
+from .structured_output import (
+    OutputDefinition,
+    extract_structured_output,
+)
 
 DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
 DEFAULT_IDLE_TIMEOUT_SECONDS = 600.0
@@ -49,9 +53,18 @@ DEFAULT_IDLE_WARNING_INTERVAL_SECONDS = 60.0
 
 @dataclass
 class _IterationOutcome:
-    """What one iteration produced — stdout plus how it ended."""
+    """What one iteration produced — stdout, decoded prose, and how it ended.
+
+    `agent_text` is the agent's own decoded prose (concatenated `TextEvent`
+    payloads). It's carried alongside the raw `stdout` so post-iteration
+    consumers — completion-signal matching and structured-output extraction —
+    operate on the *agent's words*, not on the JSON-encoded stream-json
+    wrapper. Without this split, a `<tag>` whose inner JSON contains quotes
+    would arrive with backslash-escaped quotes (broken JSON) when scanned.
+    """
 
     stdout: str
+    agent_text: str
     matched_signal: str | None
     grace_expired: bool
 
@@ -71,6 +84,7 @@ async def run(
     idle_timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS,
     completion_timeout_seconds: float = DEFAULT_COMPLETION_TIMEOUT_SECONDS,
     idle_warning_interval_seconds: float = DEFAULT_IDLE_WARNING_INTERVAL_SECONDS,
+    output: OutputDefinition | None = None,
 ) -> RunResult:
     """Drive an agent through `max_iterations` and return a frozen `RunResult`.
 
@@ -92,9 +106,24 @@ async def run(
     arrives; `completion_timeout_seconds` is the grace window that takes over
     once the signal is seen. Both are injected so tests can drive them with
     short, deterministic values.
+
+    `output` (optional) requests **structured output**: after the single
+    iteration completes, the resolved stdout is scanned for `<tag>...</tag>`
+    and the payload is returned on `RunResult.output`. Two guards run before
+    any agent work, so a misconfigured call fails fast:
+    `max_iterations != 1` is rejected (the payload must unambiguously belong
+    to one iteration) and the resolved prompt must contain the configured
+    opening tag (catches a missing output instruction without paying for a
+    run). A payload that fails JSON parse or schema validation raises
+    `StructuredOutputError`.
     """
     if max_iterations < 1:
         raise ValueError("max_iterations must be >= 1")
+    if output is not None and max_iterations != 1:
+        raise ValueError(
+            "structured output requires max_iterations == 1 "
+            f"(got max_iterations={max_iterations})"
+        )
 
     work_dir = cwd or os.getcwd()
     disp: Display = display if display is not None else TerminalDisplay()
@@ -111,8 +140,20 @@ async def run(
         built_in_args=_built_in_prompt_args(branch),
         executor=_make_prompt_executor(sandbox, work_dir),
     )
+    if output is not None:
+        opening_tag = f"<{output.tag}>"
+        if opening_tag not in resolved_prompt:
+            # Caller-owned prompt: pysolated does NOT inject an instruction
+            # describing the tag, so a missing opening tag almost certainly
+            # means the prompt was written without the required instruction.
+            # Fail before the agent runs to avoid paying for guaranteed failure.
+            raise ValueError(
+                f"structured output requires the resolved prompt to contain "
+                f"the opening tag {opening_tag!r}; none was found"
+            )
 
     accumulated_stdout: list[str] = []
+    accumulated_prose: list[str] = []
     matched_signal: str | None = None
     iterations_done = 0
 
@@ -132,13 +173,22 @@ async def run(
             display=disp,
         )
         accumulated_stdout.append(outcome.stdout)
+        accumulated_prose.append(outcome.agent_text)
         if outcome.matched_signal is not None:
             matched_signal = outcome.matched_signal
             break
 
     stdout = "\n".join(accumulated_stdout)
+    prose = "\n".join(accumulated_prose)
     commits = await _commits_since(sandbox, work_dir, pre_run_head)
     usage = agent.parse_session_usage(stdout)
+
+    # Extract against the agent's decoded prose, not the raw stream-json.
+    # The tag's inner JSON arrives JSON-escaped (quotes backslash-escaped) on
+    # the wire; only the decoded text events carry it in its original shape.
+    extracted_output = (
+        extract_structured_output(prose, output) if output is not None else None
+    )
 
     disp.status("Run complete", "success")
     disp.summary(
@@ -152,6 +202,7 @@ async def run(
         usage=usage,
         completion_signal=matched_signal,
         commits=commits,
+        output=extracted_output,
     )
 
 
@@ -272,6 +323,7 @@ async def _run_iteration(
             pass
 
     stdout = "\n".join(accumulated)
+    prose = "\n".join(agent_text)
 
     if exec_task in done:
         result = exec_task.result()
@@ -284,6 +336,7 @@ async def _run_iteration(
             )
         return _IterationOutcome(
             stdout=stdout,
+            agent_text=prose,
             matched_signal=state["matched_signal"],
             grace_expired=False,
         )
@@ -304,12 +357,14 @@ async def _run_iteration(
         )
         return _IterationOutcome(
             stdout=stdout,
+            agent_text=prose,
             matched_signal=state["matched_signal"],
             grace_expired=True,
         )
     # Unreachable in practice — defensive default.
     return _IterationOutcome(
         stdout=stdout,
+        agent_text=prose,
         matched_signal=state["matched_signal"],
         grace_expired=False,
     )
