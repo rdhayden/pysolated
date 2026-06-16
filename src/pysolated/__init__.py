@@ -25,7 +25,7 @@ from .core import (
     ToolCallEvent,
     Usage,
 )
-from .display import TerminalDisplay
+from .display import FileDisplay, TerminalDisplay
 from .errors import AgentExecutionError, IdleTimeoutError, PysolatedError
 from .orchestrator import (
     DEFAULT_COMPLETION_SIGNAL,
@@ -64,6 +64,7 @@ __all__ = [
     "PermissionMode",
     # Display
     "TerminalDisplay",
+    "FileDisplay",
     # Seams (Protocols)
     "AgentProvider",
     "SandboxProvider",
