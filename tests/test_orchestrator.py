@@ -194,6 +194,50 @@ async def test_nonzero_exit_raises_agent_execution_error() -> None:
     assert exc.value.exit_code == 2
 
 
+async def test_nonzero_exit_carries_stderr_tail_for_diagnosis() -> None:
+    """A crashed agent's stderr must reach the caller through the exception.
+
+    Without this wiring the error message tells you the exit code but not
+    *why* the agent crashed — useless for diagnosis.
+    """
+    lines = [_assistant([{"type": "text", "text": "halfway through"}])]
+    sandbox = FakeSandbox(lines, exit_code=7)
+    with pytest.raises(AgentExecutionError) as exc:
+        await run(agent=FakeAgent(lines), sandbox=sandbox, prompt="go", display=RecordingDisplay())
+    # FakeSandbox writes "boom" to stderr when exit_code != 0.
+    assert "boom" in exc.value.stderr_tail
+    assert "boom" in str(exc.value)
+
+
+async def test_nonzero_exit_carries_stdout_tail_when_stderr_empty() -> None:
+    """If the agent only logged the crash to stdout, the stdout tail still surfaces.
+
+    Some agents/tools print failures to stdout. The error must still have
+    *something* the developer can read.
+    """
+
+    class StdoutOnlyFailureSandbox(FakeSandbox):
+        async def exec(self, argv, *, stdin=None, cwd=None, on_line=None):  # type: ignore[override]
+            self.exec_calls.append({"argv": argv, "stdin": stdin, "cwd": cwd})
+            if argv[:2] == ["git", "rev-parse"] and "--abbrev-ref" in argv:
+                return ExecResult(exit_code=0, stdout="main\n", stderr="")
+            if argv[:2] == ["git", "rev-parse"]:
+                return ExecResult(exit_code=0, stdout="deadbeef\n", stderr="")
+            if argv[:2] == ["git", "rev-list"]:
+                return ExecResult(exit_code=0, stdout="", stderr="")
+            for line in self._lines:
+                if on_line is not None:
+                    on_line(line)
+            return ExecResult(exit_code=4, stdout="\n".join(self._lines), stderr="")
+
+    lines = ['{"type":"text","text":"Error: missing config file"}']
+    sandbox = StdoutOnlyFailureSandbox(lines)
+    with pytest.raises(AgentExecutionError) as exc:
+        await run(agent=FakeAgent(lines), sandbox=sandbox, prompt="go", display=RecordingDisplay())
+    assert exc.value.exit_code == 4
+    assert "missing config file" in exc.value.stdout_tail
+
+
 async def test_missing_usage_yields_none() -> None:
     lines = [_assistant([{"type": "text", "text": "no usage here"}])]
     result = await run(
