@@ -21,11 +21,14 @@ import os
 import time
 from dataclasses import dataclass
 
+from pathlib import Path
+
 from .completion import match_completion_signal
 from .core import (
     AgentCommandOptions,
     AgentProvider,
     Display,
+    ExecResult,
     RunResult,
     SandboxProvider,
     SessionIdEvent,
@@ -36,6 +39,7 @@ from .core import (
 )
 from .display import TerminalDisplay
 from .errors import AgentExecutionError, IdleTimeoutError
+from .prompts import resolve_prompt
 
 DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
 DEFAULT_IDLE_TIMEOUT_SECONDS = 600.0
@@ -56,7 +60,9 @@ async def run(
     *,
     agent: AgentProvider,
     sandbox: SandboxProvider,
-    prompt: str,
+    prompt: str | None = None,
+    prompt_file: str | Path | None = None,
+    prompt_args: dict[str, str] | None = None,
     cwd: str | None = None,
     display: Display | None = None,
     name: str | None = None,
@@ -68,9 +74,17 @@ async def run(
 ) -> RunResult:
     """Drive an agent through `max_iterations` and return a frozen `RunResult`.
 
-    The inline `prompt` is sent to the agent verbatim — no rewriting,
-    substitution, or expansion. `cwd` anchors the run (default: current working
-    directory). `display` is the presentation / test-substitution seam.
+    Exactly one of `prompt` and `prompt_file` must be supplied. An inline
+    `prompt` is sent to the agent verbatim — no rewriting, substitution, or
+    expansion; supplying `prompt_args` alongside it is rejected up front. A
+    `prompt_file` is loaded as a template: `{{KEY}}` placeholders are
+    substituted from `prompt_args` overlaid on built-in arguments (the current
+    branch is always available), then `` !`command` `` shell expressions are
+    evaluated via the sandbox seam. A non-zero shell exit fails the run
+    before any iteration starts.
+
+    `cwd` anchors the run (default: current working directory). `display` is
+    the presentation / test-substitution seam.
 
     The loop stops early the moment a `completion_signal` substring appears in
     the agent's own assistant prose (tool inputs/outputs the agent reads are
@@ -90,6 +104,14 @@ async def run(
     branch = await _current_branch(sandbox, work_dir)
     pre_run_head = await _head_sha(sandbox, work_dir)
 
+    resolved_prompt = await resolve_prompt(
+        inline=prompt,
+        file=prompt_file,
+        user_args=prompt_args,
+        built_in_args=_built_in_prompt_args(branch),
+        executor=_make_prompt_executor(sandbox, work_dir),
+    )
+
     accumulated_stdout: list[str] = []
     matched_signal: str | None = None
     iterations_done = 0
@@ -101,7 +123,7 @@ async def run(
         outcome = await _run_iteration(
             agent=agent,
             sandbox=sandbox,
-            prompt=prompt,
+            prompt=resolved_prompt,
             cwd=work_dir,
             completion_signals=signals,
             idle_timeout_seconds=idle_timeout_seconds,
@@ -139,6 +161,31 @@ def _normalize_signals(
     if isinstance(signal, str):
         return (signal,)
     return tuple(signal)
+
+
+def _built_in_prompt_args(branch: str) -> dict[str, str]:
+    """The argument set pysolated always injects into prompt templates.
+
+    Minimum for v1: the current branch (empty string when not in a git repo,
+    matching `RunResult.branch`). Adding more built-ins later is purely
+    additive — callers cannot shadow these keys.
+    """
+    return {"branch": branch}
+
+
+def _make_prompt_executor(sandbox: SandboxProvider, cwd: str):
+    """Wrap the sandbox seam as the executor used by `expand_shell_expressions`.
+
+    Each `` !`command` `` runs through `sh -c` so the user can write the
+    natural shell syntax they would type at a terminal (pipes, redirects,
+    quoting). The sandbox seam is otherwise the same one the agent uses, so a
+    Docker sandbox later will execute prompt commands inside the container.
+    """
+
+    async def execute(command: str) -> ExecResult:
+        return await sandbox.exec(["sh", "-c", command], cwd=cwd)
+
+    return execute
 
 
 async def _run_iteration(

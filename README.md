@@ -48,6 +48,48 @@ result = await run(
 )
 ```
 
+### Prompt templates
+
+A **prompt template** lives in a file and is resolved before the agent runs.
+Pass it via `prompt_file=` (and `prompt_args=` for the values). `prompt` and
+`prompt_file` are mutually exclusive; exactly one is required.
+
+```python
+# prompts/refactor.txt
+#   Refactor the {{area}} module on branch {{branch}}.
+#   Most recent commit: !`git log -1 --oneline`
+#   Emit DONE when finished.
+
+result = await run(
+    agent=claude_code("claude-opus-4-7"),
+    sandbox=no_sandbox(),
+    prompt_file="prompts/refactor.txt",
+    prompt_args={"area": "auth"},      # `branch` is built-in — don't pass it
+    completion_signal="DONE",
+)
+```
+
+Two stages run in order, both via the **sandbox seam** (so a Docker sandbox
+later will resolve prompts inside the container too):
+
+1. **Argument substitution** — every `{{KEY}}` is replaced. `prompt_args`
+   overlay built-in arguments; for v1 the only built-in is `branch` (the
+   current git branch, injected automatically). Validation is strict:
+   - Passing a `prompt_args` key that collides with a built-in raises
+     `PromptArgumentError` so you can't silently shadow framework values.
+   - A `{{KEY}}` with no matching argument raises `PromptArgumentError` so
+     a typo never reaches the agent as the literal `{{KEY}}` token.
+2. **Prompt expansion** — every `` !`command` `` is replaced by the
+   command's stdout, evaluated via the sandbox seam. A non-zero exit raises
+   `PromptExpansionError` immediately, so a broken command never produces a
+   silently-truncated prompt.
+
+**Inline prompts skip both stages.** A literal `{{KEY}}` or `` !`cmd` `` in
+an inline string is sent through verbatim — nothing is substituted or
+executed. Passing `prompt_args` alongside an inline `prompt` raises
+`PromptArgumentError` up front so you find out immediately that the args
+would be ignored.
+
 ## CLI
 
 ```bash
@@ -58,7 +100,9 @@ The CLI is a thin Typer layer over the same `run()` engine. Flags:
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--prompt` | _(required)_ | Inline prompt, sent to the agent verbatim. |
+| `--prompt` | _(see below)_ | Inline prompt, sent to the agent verbatim. Mutually exclusive with `--prompt-file`; one is required. |
+| `--prompt-file` | _(see below)_ | Path to a prompt template. `{{KEY}}` placeholders are substituted from `--prompt-arg` overlaid on built-ins (`branch`); `` !`cmd` `` expressions are run through the sandbox and replaced by stdout. |
+| `--prompt-arg` | _(none)_ | `KEY=VALUE` argument for `--prompt-file`. Repeatable. Rejected when combined with `--prompt`. |
 | `--model` | `claude-opus-4-7` | Claude model to run. |
 | `--cwd` | current dir | Repo directory to anchor the run to. |
 | `--permission-mode` | _(none)_ | Claude `--permission-mode`; mutually exclusive with skip-permissions. |
@@ -83,6 +127,12 @@ uv run pysolated run --prompt "..." --cwd /path/to/repo \
 
 # shorten the idle timeout and the post-signal grace window
 uv run pysolated run --prompt "..." --idle-timeout 120 --completion-timeout 30
+
+# resolve a prompt template, supplying one user argument; `branch` is built-in
+uv run pysolated run \
+  --prompt-file prompts/refactor.txt \
+  --prompt-arg area=auth \
+  --completion-signal DONE
 ```
 
 On completion the CLI prints the iteration count, the matched completion signal,

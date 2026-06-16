@@ -34,6 +34,15 @@ from .orchestrator import (
     DEFAULT_IDLE_WARNING_INTERVAL_SECONDS,
     run,
 )
+from .prompts import (
+    PromptArgumentError,
+    PromptError,
+    PromptExecutor,
+    PromptExpansionError,
+    expand_shell_expressions,
+    resolve_prompt,
+    substitute_arguments,
+)
 from .sandboxes import NoSandbox, no_sandbox
 
 __all__ = [
@@ -55,6 +64,11 @@ __all__ = [
     "parse_stream_line",
     "parse_session_usage",
     "match_completion_signal",
+    # Prompt pipeline
+    "resolve_prompt",
+    "substitute_arguments",
+    "expand_shell_expressions",
+    "PromptExecutor",
     # Defaults
     "DEFAULT_COMPLETION_SIGNAL",
     "DEFAULT_IDLE_TIMEOUT_SECONDS",
@@ -75,4 +89,7 @@ __all__ = [
     "PysolatedError",
     "AgentExecutionError",
     "IdleTimeoutError",
+    "PromptError",
+    "PromptArgumentError",
+    "PromptExpansionError",
 ]
