@@ -34,9 +34,9 @@ asyncio.run(main())
 ```
 
 `run()` returns a frozen `RunResult` (`iterations`, `stdout`, `branch`, `usage`,
-`completion_signal`, `commits`, `output`). The inline prompt is sent to the
-agent verbatim — no substitution or expansion. Loop and timer behavior is
-configurable:
+`completion_signal`, `commits`, `output`, `log_file_path`). The inline prompt
+is sent to the agent verbatim — no substitution or expansion. Loop and timer
+behavior is configurable:
 
 ```python
 result = await run(
@@ -91,6 +91,34 @@ an inline string is sent through verbatim — nothing is substituted or
 executed. Passing `prompt_args` alongside an inline `prompt` raises
 `PromptArgumentError` up front so you find out immediately that the args
 would be ignored.
+
+### File logging and run naming
+
+By default `run()` narrates to the terminal via `TerminalDisplay`. For an
+unattended run, redirect progress and agent output to a log file by passing
+`log_file=` — `run()` constructs a `FileDisplay` that writes line-buffered, so
+`tail -f` shows live progress while the run is in flight:
+
+```python
+result = await run(
+    agent=claude_code("claude-opus-4-7"),
+    sandbox=no_sandbox(),
+    prompt="Refactor X. Emit DONE when finished.",
+    name="nightly-refactor",            # appears in status lines + log header
+    log_file="/tmp/pysolated-nightly.log",
+)
+print(result.log_file_path)             # /tmp/pysolated-nightly.log
+```
+
+- `log_file=` and `display=` are mutually exclusive — pass one or the other.
+- `RunResult.log_file_path` is the resolved path of the log file when
+  `log_file=` was used; `None` otherwise.
+- `name=` is optional. When set it prefixes every status line in both
+  `TerminalDisplay` and `FileDisplay` (`[nightly-refactor] Iteration 1/3`) and
+  appears in the log file's first line so concurrent runs are distinguishable
+  at a glance.
+- Both displays satisfy the same `Display` protocol — the orchestrator is
+  unchanged; it just receives a different impl.
 
 ### Structured output
 
@@ -162,7 +190,8 @@ The CLI is a thin Typer layer over the same `run()` engine. Flags:
 | `--model` | `claude-opus-4-7` | Claude model to run. |
 | `--cwd` | current dir | Repo directory to anchor the run to. |
 | `--permission-mode` | _(none)_ | Claude `--permission-mode`; mutually exclusive with skip-permissions. |
-| `--name` | _(none)_ | Optional name for the run, shown in the display. |
+| `--name` | _(none)_ | Optional name for the run. Appears as a `[name]` prefix on every status line and in the log file header. |
+| `--log-file` | _(none)_ | Write progress and agent output to this path instead of the terminal. `tail -f` shows live progress; `RunResult.log_file_path` reports the path. |
 | `--max-iterations` | `1` | Maximum agent invocations in the loop. |
 | `--completion-signal` | `<promise>COMPLETE</promise>` | Substring in the agent's own output that ends the loop early (tool inputs/outputs it reads are never matched). Repeat the flag to match any of several. |
 | `--idle-timeout` | `600` | Seconds without output before failing with an idle error. |
@@ -183,6 +212,10 @@ uv run pysolated run --prompt "..." --cwd /path/to/repo \
 
 # shorten the idle timeout and the post-signal grace window
 uv run pysolated run --prompt "..." --idle-timeout 120 --completion-timeout 30
+
+# unattended run: write progress + agent output to a log file, name the run
+uv run pysolated run --prompt "..." \
+  --name nightly-refactor --log-file /tmp/pysolated-nightly.log
 
 # resolve a prompt template, supplying one user argument; `branch` is built-in
 uv run pysolated run \
@@ -205,6 +238,8 @@ other agents are additive:
   stream output.
 - **`SandboxProvider`** — runs a command, streaming stdout line-by-line.
 - **`Display`** — narrates the run (the orchestrator's test-substitution point).
+  Two impls ship: `TerminalDisplay` (default) and `FileDisplay` (selected by
+  `log_file=` / `--log-file`).
 
 ## Development
 

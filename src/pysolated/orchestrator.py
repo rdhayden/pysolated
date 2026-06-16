@@ -37,7 +37,7 @@ from .core import (
     ToolCallEvent,
     Usage,
 )
-from .display import TerminalDisplay
+from .display import FileDisplay, TerminalDisplay
 from .errors import AgentExecutionError, IdleTimeoutError
 from .prompts import resolve_prompt
 from .structured_output import (
@@ -78,6 +78,7 @@ async def run(
     prompt_args: dict[str, str] | None = None,
     cwd: str | None = None,
     display: Display | None = None,
+    log_file: str | Path | None = None,
     name: str | None = None,
     max_iterations: int = 1,
     completion_signal: str | list[str] | tuple[str, ...] = DEFAULT_COMPLETION_SIGNAL,
@@ -124,9 +125,20 @@ async def run(
             "structured output requires max_iterations == 1 "
             f"(got max_iterations={max_iterations})"
         )
+    if display is not None and log_file is not None:
+        raise ValueError(
+            "display= and log_file= are mutually exclusive — pass one or the other"
+        )
 
     work_dir = cwd or os.getcwd()
-    disp: Display = display if display is not None else TerminalDisplay()
+    log_file_path: str | None = str(log_file) if log_file is not None else None
+    disp: Display
+    if display is not None:
+        disp = display
+    elif log_file is not None:
+        disp = FileDisplay(log_file, name=name)
+    else:
+        disp = TerminalDisplay(name=name)
     signals = _normalize_signals(completion_signal)
 
     disp.intro(name or "pysolated")
@@ -203,6 +215,7 @@ async def run(
         completion_signal=matched_signal,
         commits=commits,
         output=extracted_output,
+        log_file_path=log_file_path,
     )
 
 

@@ -66,6 +66,14 @@ def run_command(
         help="Claude --permission-mode (mutually exclusive with skip-permissions).",
     ),
     name: str | None = typer.Option(None, "--name", help="Optional name for the run."),
+    log_file: str | None = typer.Option(
+        None,
+        "--log-file",
+        help=(
+            "Write progress and agent output to this path instead of the terminal. "
+            "tail -f shows live progress. RunResult.log_file_path reports the path."
+        ),
+    ),
     max_iterations: int = typer.Option(
         1, "--max-iterations", min=1, help="Max agent invocations in the loop."
     ),
@@ -117,6 +125,7 @@ def run_command(
                 prompt_args=prompt_args or None,
                 cwd=cwd,
                 name=name,
+                log_file=log_file,
                 max_iterations=max_iterations,
                 completion_signal=signal_arg,
                 idle_timeout_seconds=idle_timeout,

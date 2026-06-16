@@ -182,6 +182,9 @@ class RunResult(BaseModel):
     `output` carries the structured-output payload extracted after the run when
     the caller passed `output=Output.object(...)` / `Output.string(...)` to
     `run()`; `None` for runs without an `output` argument.
+
+    `log_file_path` is the resolved path of the log file when the run used the
+    file display (`log_file=` on `run()`); `None` otherwise.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -193,3 +196,4 @@ class RunResult(BaseModel):
     completion_signal: str | None = None
     commits: list[str] = Field(default_factory=list)
     output: Any = None
+    log_file_path: str | None = None
