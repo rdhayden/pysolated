@@ -7,6 +7,9 @@ without running a real agent.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import signal as os_signal
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +63,47 @@ def test_cli_name_flag_passes_through_to_engine(monkeypatch: Any) -> None:
     )
     assert result.exit_code == 0, result.output
     assert captured["name"] == "alpha"
+
+
+def test_cli_passes_abort_signal_event_to_engine(monkeypatch: Any) -> None:
+    """The CLI must hand `signal=asyncio.Event` to `run_engine` for SIGINT wiring."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["run", "--prompt", "go"])
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured["signal"], asyncio.Event)
+
+
+def test_cli_sigint_sets_abort_signal_and_exits_130(monkeypatch: Any) -> None:
+    """SIGINT during a run must set the abort event and surface exit 130.
+
+    The fake engine schedules a SIGINT to the current process while it is
+    awaiting, then verifies the CLI's installed handler set the event before
+    raising `CancelledError` (mimicking the orchestrator's abort path).
+    """
+    captured: dict = {}
+
+    async def fake_engine(**kwargs: Any) -> RunResult:
+        captured.update(kwargs)
+        abort: asyncio.Event = kwargs["signal"]
+        loop = asyncio.get_running_loop()
+        loop.call_soon(lambda: os.kill(os.getpid(), os_signal.SIGINT))
+        try:
+            await asyncio.wait_for(abort.wait(), timeout=2.0)
+        except asyncio.TimeoutError:  # pragma: no cover - assertion path
+            raise AssertionError("CLI did not set the abort event on SIGINT")
+        raise asyncio.CancelledError("aborted by signal")
+
+    monkeypatch.setattr(cli_module, "run_engine", fake_engine)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["run", "--prompt", "go"])
+    assert result.exit_code == 130, result.output
+    assert isinstance(captured["signal"], asyncio.Event)
 
 
 def test_cli_without_log_file_omits_flag(monkeypatch: Any) -> None:

@@ -7,10 +7,12 @@ calls the same `run()` the library exposes; it is never a parallel implementatio
 from __future__ import annotations
 
 import asyncio
+import signal as os_signal
 
 import typer
 
 from .agents import PermissionMode, claude_code
+from .core import RunResult
 from .errors import AgentExecutionError, IdleTimeoutError
 from .orchestrator import (
     DEFAULT_COMPLETION_SIGNAL,
@@ -115,9 +117,19 @@ def run_command(
         completion_signal[0] if len(completion_signal) == 1 else completion_signal
     )
 
-    try:
-        result = asyncio.run(
-            run_engine(
+    async def _drive() -> RunResult:
+        abort = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        # Map SIGINT (Ctrl-C) onto the abort event so the orchestrator can
+        # cancel the in-flight iteration and kill the agent subprocess
+        # cleanly, instead of KeyboardInterrupt tearing through asyncio mid-await.
+        try:
+            loop.add_signal_handler(os_signal.SIGINT, abort.set)
+            handler_installed = True
+        except (NotImplementedError, RuntimeError):  # pragma: no cover - non-unix
+            handler_installed = False
+        try:
+            return await run_engine(
                 agent=agent,
                 sandbox=sandbox,
                 prompt=prompt,
@@ -130,9 +142,18 @@ def run_command(
                 completion_signal=signal_arg,
                 idle_timeout_seconds=idle_timeout,
                 completion_timeout_seconds=completion_timeout,
+                signal=abort,
             )
-        )
-    except KeyboardInterrupt:  # pragma: no cover - interactive abort
+        finally:
+            if handler_installed:
+                try:
+                    loop.remove_signal_handler(os_signal.SIGINT)
+                except (NotImplementedError, RuntimeError):  # pragma: no cover
+                    pass
+
+    try:
+        result = asyncio.run(_drive())
+    except (asyncio.CancelledError, KeyboardInterrupt):
         typer.echo("Aborted.", err=True)
         raise typer.Exit(code=130)
     except PromptError as exc:
