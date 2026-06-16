@@ -11,9 +11,10 @@ v1 iteration lifecycle: one agent provider (`claude_code`) running on the host
 (`no_sandbox`), driven through `run()` and the `pysolated run` CLI. The run
 loops up to `max_iterations`, stops early on a **completion signal**, enforces an
 **idle timeout** and a post-signal **completion grace window**, reports the
-**commits** the agent made, and optionally extracts a schema-validated
-**structured output** payload from the agent's prose. No isolation yet — the
-agent works directly in your repo (real isolation is the next slice).
+**commits** the agent made, supports **abort** via an `asyncio.Event` (or
+Ctrl-C from the CLI), and optionally extracts a schema-validated **structured
+output** payload from the agent's prose. No isolation yet — the agent works
+directly in your repo (real isolation is the next slice).
 
 ## Library
 
@@ -119,6 +120,46 @@ print(result.log_file_path)             # /tmp/pysolated-nightly.log
   at a glance.
 - Both displays satisfy the same `Display` protocol — the orchestrator is
   unchanged; it just receives a different impl.
+
+### Abort / cancellation
+
+A run can be cancelled mid-flight with an `asyncio.Event` passed as `signal=`.
+Setting the event aborts the in-flight iteration: the `sandbox.exec` is
+cancelled (on `no_sandbox` that kills the host subprocess) and `run()` raises
+`asyncio.CancelledError` promptly instead of waiting for the agent to finish.
+
+```python
+import asyncio
+from pysolated import run, claude_code, no_sandbox
+
+async def main():
+    abort = asyncio.Event()
+
+    async def fire_abort_after(seconds: float) -> None:
+        await asyncio.sleep(seconds)
+        abort.set()
+
+    asyncio.create_task(fire_abort_after(5.0))
+    try:
+        await run(
+            agent=claude_code("claude-opus-4-7"),
+            sandbox=no_sandbox(),
+            prompt="long task",
+            signal=abort,
+        )
+    except asyncio.CancelledError:
+        print("aborted")
+
+asyncio.run(main())
+```
+
+- Setting the event between iterations stops the outer loop before the next
+  iteration starts.
+- Pre-setting the event before `run()` is called aborts immediately, without
+  invoking the agent.
+- From the CLI, **Ctrl-C** maps onto the same abort signal: the SIGINT handler
+  sets the event so the orchestrator cancels cleanly and the CLI exits with
+  status `130` instead of tearing through asyncio with a `KeyboardInterrupt`.
 
 ### Structured output
 

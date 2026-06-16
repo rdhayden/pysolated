@@ -1,12 +1,16 @@
 """The orchestrator — the `run()` engine shared by the library and the CLI.
 
-Each iteration races three conditions while the sandbox streams the agent's
+Each iteration races four conditions while the sandbox streams the agent's
 stdout: an **idle timeout** (no line for too long → fail the run), a
 **completion timeout** (a grace window that engages once the configured
-completion signal appears → succeed-with-warning on expiry), and an **abort**
-seam (cancelling the awaiting task kills the subprocess; full wiring lives in
-the abort slice). Timeouts are injected as parameters so tests can drive them
-with deterministic short values.
+completion signal appears → succeed-with-warning on expiry), the agent
+subprocess exiting, and an **abort** signal (`signal: asyncio.Event` on
+`run()`). Firing the abort cancels the in-flight `sandbox.exec`, which on
+`no_sandbox` kills the host subprocess; `run()` then raises
+`asyncio.CancelledError`. The CLI installs a SIGINT handler that sets that
+event, so Ctrl-C maps cleanly onto cancellation instead of tearing through
+asyncio mid-await. Timeouts are injected as parameters so tests can drive
+them with deterministic short values.
 
 The outer loop runs `1..max_iterations` and returns early with the matched
 signal the moment one fires. `RunResult.completion_signal` reports which signal
@@ -86,6 +90,7 @@ async def run(
     completion_timeout_seconds: float = DEFAULT_COMPLETION_TIMEOUT_SECONDS,
     idle_warning_interval_seconds: float = DEFAULT_IDLE_WARNING_INTERVAL_SECONDS,
     output: OutputDefinition | None = None,
+    signal: asyncio.Event | None = None,
 ) -> RunResult:
     """Drive an agent through `max_iterations` and return a frozen `RunResult`.
 
@@ -117,6 +122,14 @@ async def run(
     opening tag (catches a missing output instruction without paying for a
     run). A payload that fails JSON parse or schema validation raises
     `StructuredOutputError`.
+
+    `signal` (optional) is an `asyncio.Event` the caller can set to abort the
+    run mid-flight. When set during an iteration, the in-flight
+    `sandbox.exec` is cancelled (on `no_sandbox`, that kills the host
+    subprocess) and `run()` raises `asyncio.CancelledError`. Setting the
+    event between iterations stops the outer loop before the next iteration
+    starts. The CLI installs a SIGINT handler that sets this event so Ctrl-C
+    aborts cleanly.
     """
     if max_iterations < 1:
         raise ValueError("max_iterations must be >= 1")
@@ -170,6 +183,9 @@ async def run(
     iterations_done = 0
 
     for iteration_num in range(1, max_iterations + 1):
+        if signal is not None and signal.is_set():
+            disp.status("Run aborted by signal", "warn")
+            raise asyncio.CancelledError("run aborted by signal")
         iterations_done = iteration_num
         disp.status(f"Iteration {iteration_num}/{max_iterations}", "info")
 
@@ -183,6 +199,7 @@ async def run(
             completion_timeout_seconds=completion_timeout_seconds,
             idle_warning_interval_seconds=idle_warning_interval_seconds,
             display=disp,
+            abort_signal=signal,
         )
         accumulated_stdout.append(outcome.stdout)
         accumulated_prose.append(outcome.agent_text)
@@ -263,13 +280,16 @@ async def _run_iteration(
     completion_timeout_seconds: float,
     idle_warning_interval_seconds: float,
     display: Display,
+    abort_signal: asyncio.Event | None = None,
 ) -> _IterationOutcome:
     """Stream one agent invocation, race the three timeout/completion conditions.
 
     Returns the iteration's stdout and which signal (if any) matched. Raises
     `IdleTimeoutError` when the idle timer fires before any signal; the
     completion-grace timer instead returns successfully with `grace_expired=True`
-    and a warning on the display.
+    and a warning on the display. When `abort_signal` is set mid-iteration the
+    exec/timer tasks are cancelled and `asyncio.CancelledError` is raised so the
+    subprocess kill path (see `no_sandbox`) runs and `run()` stops promptly.
     """
     accumulated: list[str] = []
     agent_text: list[str] = []
@@ -323,9 +343,14 @@ async def _run_iteration(
             display=display,
         )
     )
+    abort_task: asyncio.Task | None = None
+    race_tasks: list[asyncio.Task] = [exec_task, timer_task]
+    if abort_signal is not None:
+        abort_task = asyncio.create_task(abort_signal.wait())
+        race_tasks.append(abort_task)
 
     done, pending = await asyncio.wait(
-        [exec_task, timer_task], return_when=asyncio.FIRST_COMPLETED
+        race_tasks, return_when=asyncio.FIRST_COMPLETED
     )
     for task in pending:
         task.cancel()
@@ -337,6 +362,10 @@ async def _run_iteration(
 
     stdout = "\n".join(accumulated)
     prose = "\n".join(agent_text)
+
+    if abort_task is not None and abort_task in done:
+        display.status("Run aborted by signal", "warn")
+        raise asyncio.CancelledError("run aborted by signal")
 
     if exec_task in done:
         result = exec_task.result()
