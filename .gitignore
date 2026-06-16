@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+.venv/
+
+# uv
+# (uv.lock is committed; the virtualenv is not)
+
+# Node reference install (Sandcastle, kept locally for cross-referencing)
+node_modules/
+
+# Tooling
+.sandcastle/
