@@ -13,7 +13,7 @@ shell string.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Literal, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -177,9 +177,14 @@ class SandboxProvider(Protocol):
 
 
 class RunResult(BaseModel):
-    """The frozen result of a `run()` — what the agent said and where it ran."""
+    """The frozen result of a `run()` — what the agent said and where it ran.
 
-    model_config = ConfigDict(frozen=True)
+    `output` carries the structured-output payload extracted after the run when
+    the caller passed `output=Output.object(...)` / `Output.string(...)` to
+    `run()`; `None` for runs without an `output` argument.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     iterations: int
     stdout: str
@@ -187,3 +192,4 @@ class RunResult(BaseModel):
     usage: Usage | None = None
     completion_signal: str | None = None
     commits: list[str] = Field(default_factory=list)
+    output: Any = None

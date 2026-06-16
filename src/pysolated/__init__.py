@@ -44,6 +44,14 @@ from .prompts import (
     substitute_arguments,
 )
 from .sandboxes import NoSandbox, no_sandbox
+from .structured_output import (
+    Output,
+    OutputDefinition,
+    OutputObject,
+    OutputString,
+    StructuredOutputError,
+    extract_structured_output,
+)
 
 __all__ = [
     # Entry point
@@ -69,6 +77,12 @@ __all__ = [
     "substitute_arguments",
     "expand_shell_expressions",
     "PromptExecutor",
+    # Structured output
+    "Output",
+    "OutputDefinition",
+    "OutputObject",
+    "OutputString",
+    "extract_structured_output",
     # Defaults
     "DEFAULT_COMPLETION_SIGNAL",
     "DEFAULT_IDLE_TIMEOUT_SECONDS",
@@ -92,4 +106,5 @@ __all__ = [
     "PromptError",
     "PromptArgumentError",
     "PromptExpansionError",
+    "StructuredOutputError",
 ]

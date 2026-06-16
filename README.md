@@ -10,9 +10,10 @@ ADRs.
 v1 iteration lifecycle: one agent provider (`claude_code`) running on the host
 (`no_sandbox`), driven through `run()` and the `pysolated run` CLI. The run
 loops up to `max_iterations`, stops early on a **completion signal**, enforces an
-**idle timeout** and a post-signal **completion grace window**, and reports the
-**commits** the agent made. No isolation yet — the agent works directly in your
-repo (real isolation is the next slice).
+**idle timeout** and a post-signal **completion grace window**, reports the
+**commits** the agent made, and optionally extracts a schema-validated
+**structured output** payload from the agent's prose. No isolation yet — the
+agent works directly in your repo (real isolation is the next slice).
 
 ## Library
 
@@ -33,8 +34,9 @@ asyncio.run(main())
 ```
 
 `run()` returns a frozen `RunResult` (`iterations`, `stdout`, `branch`, `usage`,
-`completion_signal`, `commits`). The inline prompt is sent to the agent verbatim
-— no substitution or expansion. Loop and timer behavior is configurable:
+`completion_signal`, `commits`, `output`). The inline prompt is sent to the
+agent verbatim — no substitution or expansion. Loop and timer behavior is
+configurable:
 
 ```python
 result = await run(
@@ -89,6 +91,60 @@ an inline string is sent through verbatim — nothing is substituted or
 executed. Passing `prompt_args` alongside an inline `prompt` raises
 `PromptArgumentError` up front so you find out immediately that the args
 would be ignored.
+
+### Structured output
+
+A **structured output** is a schema-validated payload the agent emits inside
+a named XML tag in its own prose. Ask for one via `output=` on `run()`:
+
+```python
+from pydantic import BaseModel
+from pysolated import Output, run, claude_code, no_sandbox
+
+class Answer(BaseModel):
+    answer: int
+    rationale: str
+
+result = await run(
+    agent=claude_code("claude-opus-4-7"),
+    sandbox=no_sandbox(),
+    prompt=(
+        "Compute the answer. "
+        "Reply with <result>{\"answer\": int, \"rationale\": str}</result>."
+    ),
+    output=Output.object("result", Answer),
+)
+print(result.output.answer)       # typed: int
+print(result.output.rationale)    # typed: str
+```
+
+Two flavours, both consumed via `output=`:
+
+- `Output.object(tag, model)` — JSON-parses the inner text and validates it
+  against the Pydantic `model`. A `` ```json … ``` `` (or bare ` ``` … ``` `)
+  fence inside the tag is unwrapped automatically.
+- `Output.string(tag)` — returns the raw inner text, whitespace-trimmed; no
+  JSON parsing, no schema.
+
+When the agent emits the tag multiple times — common during self-correction —
+the **last occurrence wins**.
+
+Structured output is **orthogonal to the completion signal**; a run may use
+either, both, or neither. Two up-front guards run before any agent work, so a
+misconfigured call fails fast:
+
+- `max_iterations != 1` is rejected (the payload must unambiguously belong to
+  the iteration that produced it).
+- The resolved prompt must contain the configured opening tag — a missing
+  instruction is caught before paying for the run.
+
+On a tag that does parse and validate, `RunResult.output` holds the model
+instance (object mode) or the trimmed string (string mode). On failure (tag
+missing, JSON parse error, schema mismatch), `run()` raises
+`StructuredOutputError` carrying `tag`, `raw_matched` (the inner text when
+any was found), and the underlying `cause` (the `JSONDecodeError` or
+`pydantic.ValidationError`) so you can fix the prompt or schema without
+re-running the agent.
 
 ## CLI
 
