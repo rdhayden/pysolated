@@ -44,7 +44,16 @@ from .prompts import (
     resolve_prompt,
     substitute_arguments,
 )
-from .sandboxes import NoSandbox, NoSandboxHandle, no_sandbox
+from .sandboxes import (
+    NoSandbox,
+    NoSandboxHandle,
+    Podman,
+    PodmanHandle,
+    PodmanImageNotFoundError,
+    PodmanLaunchError,
+    no_sandbox,
+    podman,
+)
 from .structured_output import (
     Output,
     OutputDefinition,
@@ -63,6 +72,9 @@ __all__ = [
     "no_sandbox",
     "NoSandbox",
     "NoSandboxHandle",
+    "podman",
+    "Podman",
+    "PodmanHandle",
     "PermissionMode",
     # Display
     "TerminalDisplay",
@@ -111,4 +123,6 @@ __all__ = [
     "PromptArgumentError",
     "PromptExpansionError",
     "StructuredOutputError",
+    "PodmanImageNotFoundError",
+    "PodmanLaunchError",
 ]

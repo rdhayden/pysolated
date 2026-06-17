@@ -17,14 +17,15 @@ Why not use Sandcastle? If you are comfortable with Node or need to programatica
 
 ## Status
 
-v1 iteration lifecycle: one agent provider (`claude_code`) running on the host
-(`no_sandbox`), driven through `run()` and the `pysolated run` CLI. The run
-loops up to `max_iterations`, stops early on a **completion signal**, enforces an
-**idle timeout** and a post-signal **completion grace window**, reports the
-**commits** the agent made, supports **abort** via an `asyncio.Event` (or
-Ctrl-C from the CLI), and optionally extracts a schema-validated **structured
-output** payload from the agent's prose. No isolation yet — the agent works
-directly in your repo (real isolation is the next slice).
+v1 iteration lifecycle: one agent provider (`claude_code`), driven through
+`run()` and the `pysolated run` CLI. The run loops up to `max_iterations`,
+stops early on a **completion signal**, enforces an **idle timeout** and a
+post-signal **completion grace window**, reports the **commits** the agent
+made, supports **abort** via an `asyncio.Event` (or Ctrl-C from the CLI), and
+optionally extracts a schema-validated **structured output** payload from the
+agent's prose. Two sandbox providers ship: `no_sandbox` (no isolation — host
+subprocess) and `podman` (rootless container with a same-path repo bind
+mount — real isolation, see below).
 
 ## Library
 
@@ -60,6 +61,79 @@ result = await run(
     completion_timeout_seconds=60,     # grace window after the signal is seen
 )
 ```
+
+### Sandbox providers
+
+Two sandbox providers ship today; both implement the same factory + live-handle
+seam ([ADR 0003](docs/adr/0003-sandbox-providers-are-factories.md)), so swapping
+between them is one constructor change in your `run()` call.
+
+**`no_sandbox()`** — no isolation. The agent is a host subprocess that touches
+your real working directory. Right for trusted runs in throwaway worktrees;
+wrong for anything you wouldn't paste into your shell.
+
+**`podman(image=…)`** — a long-lived rootless container as the isolation
+boundary. `run()` starts the container once, runs every command in it via
+`podman exec`, and removes it (`podman rm -f`) when the run exits — success,
+failure, idle timeout, or Ctrl-C.
+
+```python
+from pysolated import run, claude_code, podman
+
+await run(
+    agent=claude_code("claude-opus-4-7"),
+    sandbox=podman(
+        image="pysolated-agent:latest",
+        env={"ANTHROPIC_API_KEY": "sk-..."},  # MUST pass credentials explicitly
+    ),
+    prompt="say hi",
+)
+```
+
+Key behaviours:
+
+- **Same-path repo bind mount** ([ADR 0004](docs/adr/0004-same-path-bind-mount.md)).
+  The host repo is mounted at the *identical* path inside the container with
+  the default `:z` SELinux label. Combined with `--userns=keep-id:uid=N,gid=N`
+  + `--user N:N`, files appear owned by the in-container user and the
+  orchestrator's host `cwd` passes through `podman exec -w` unchanged — no
+  chown step, no git `safe.directory` configuration.
+- **Credentials are explicit.** Unlike `no_sandbox`, the container does **not**
+  inherit your host shell's environment. Anything the agent needs
+  (`ANTHROPIC_API_KEY`, `GH_TOKEN`, …) goes through `env=` or a mounted file.
+  This is the deliberate isolation surface, not a configuration miss.
+- **`exec` is argv passthrough** ([ADR 0001](docs/adr/0001-agent-providers-return-argv.md)).
+  No `sh -c` wrapper inside the container; the argv built by the agent
+  provider runs as-is.
+- **Cancellation kills the `podman exec` client.** `podman rm -f` from `close()`
+  is the true kill switch for any in-container process the client left behind;
+  an `atexit` backstop catches the rare abnormal-exit case.
+
+The **image contract** the provider relies on:
+
+- A user/group exists at `container_uid:container_gid` (default `1000:1000`),
+  so keep-id maps host ↔ container ownership without a chown step.
+- `git` and the agent CLI (`claude` for `claude_code`) are on `PATH`.
+- The user has a writable `HOME`. The provider injects `HOME=/home/agent` by
+  default; override via `env={"HOME": "..."}`.
+
+A missing image is caught up front: `create()` runs `podman image inspect
+<image>` as a preflight and raises `PodmanImageNotFoundError` with a clear
+message if the image isn't there yet (build or `podman pull` it before re-running).
+
+Knobs on `podman(...)`:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `image` | _(required)_ | The image to run. |
+| `env` | `{}` | `-e` pairs at `podman run`. Provider env wins over the `HOME=/home/agent` default. |
+| `userns` | `"keep-id"` | `--userns=keep-id:uid=N,gid=N` + paired `--user N:N`. Pass `None` for raw Podman defaults. |
+| `container_uid` / `container_gid` | `1000` / `1000` | uid:gid for `--user` and keep-id. |
+| `selinux_label` | `"z"` | Mount label (`z` shared, `Z` private). Pass `None` for no label. |
+
+Mounts beyond the repo bind mount, CPU/memory limits, and `pysolated podman
+build-image` are tracked in [`docs/futures/features.md`](docs/futures/features.md)
+and the committed roadmap there.
 
 ### Prompt templates
 

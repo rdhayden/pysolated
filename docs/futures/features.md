@@ -8,8 +8,9 @@ stays honest and nothing is lost.
 
 Each item is a feature a *user* would notice — not an internal refactor. References
 point at Sandcastle's concepts (`CONTEXT.md`) and ADRs where they capture the
-rationale or the tricky edges. Nothing here is committed-to; it's a menu for future
-slices.
+rationale or the tricky edges. The project has since committed to reaching full
+parity (see **Committed roadmap** at the end); individual items below remain a menu
+of *what*, while the roadmap fixes the *order*.
 
 ---
 
@@ -22,7 +23,39 @@ name. Everything below is a sandbox provider beyond no-sandbox.
   `mounts`, `cpus`/memory limits, UID alignment via build-arg (Sandcastle ADR 0014),
   removal of chown-based UID alignment (ADR 0005).
 - **Podman sandbox provider** — `userns: keep-id`, SELinux-aware mount flags
-  (`:z`, `:ro,z`), `mounts`, `cpus`.
+  (`:z`, `:ro,z`), `mounts`, `cpus`. **Minimal provider shipped (issue #20):
+  factory+handle on the new seam, `keep-id` + same-path `:z` repo mount, argv
+  passthrough through `podman exec`, `podman rm -f` teardown + `atexit`
+  backstop.** Still ahead inside the Podman track: `mounts` + `cpus` (#21),
+  `build-image` / `remove-image` + derived default image name (#22). Deferred
+  *out of* the provider slice itself:
+  - **File-mount parent creation** — Sandcastle's `processFileMountParents`: a root
+    `mkdir -p && chown` exec after `podman run` so mounting a single file whose
+    sandbox-side parent dir is absent works. v1 passes mounts through as plain `-v`
+    and documents "the sandbox-side parent directory must exist in the image".
+  - **Sandbox-side tilde resolution** — `sandbox_path` is absolute-only in v1; no
+    `~`→sandbox-home expansion (pysolated has no `sandboxHomedir` concept).
+  - **Windows mount normalization** — `normalizeMounts`/gitdir remapping (ADR 0006);
+    pysolated is platform-linux and has no worktree/gitdir mounts.
+  - **Extra `podman run` knobs** — `network` (`--network`), `groups` (`--group-add`,
+    e.g. docker-outside-of-docker), `devices` (`--device`, e.g. `/dev/kvm`). v1 ships
+    `cpus` only; these are each their own feature with their own justification.
+  - **Global signal-handler cleanup registry** — Sandcastle's `shutdownRegistry`
+    (shared SIGINT/SIGTERM listener `rm -f`-ing every live container). v1 relies on
+    the orchestrator's `finally` + a per-container `atexit` backstop; a library
+    hijacking process-wide signals is invasive. SIGKILL leaks stay unavoidable.
+  - **Intentionally NOT ported: `maxOutputTailChars`/`BoundedTail`.** It guards V8's
+    max-string-length crash; Python `str` has no such cap, `no_sandbox` already
+    accumulates unbounded, and a tail risks truncating the usage/structured-output
+    bytes the orchestrator parses. If output-bounding is ever wanted it's a
+    cross-provider seam concern, not a Podman option.
+  - **Active image-contract validation** — v1 documents the image contract (user at
+    `container_uid:gid`, `git` + agent CLI on `PATH`, writable `HOME`) and relies on
+    a single `podman image inspect` existence preflight. Actively probing the image
+    (`exec id`, `which git`, `which claude` at create time) is a later refinement.
+  - **`podman machine` preflight** — Sandcastle checks a running Podman Machine on
+    macOS/Windows before create. v1 is platform-linux so it's skipped; when pysolated
+    goes multi-platform this preflight (and the matching clear error) returns.
 - **Vercel sandbox provider** — remote sandbox; `token`, `ports`, `timeout`,
   `resources`, `runtime`.
 - **Daytona sandbox provider** — remote sandbox; `projectId`, `teamId`, `timeoutMs`.
@@ -142,6 +175,23 @@ v1 ships `claude_code` only. Sandcastle also supports:
 - This list mirrors Sandcastle as of the reference snapshot in
   `../aihero/sandcastle`. It is a *reimagining* target, so any of these may be
   redesigned (or dropped) rather than ported faithfully when its slice is picked up.
-- The natural **next slice after v1** is Section 1 (Docker) + the parts of Section 2
-  it requires (worktrees, merge-to-head) — that's what makes pysolated live up to
-  its name.
+
+---
+
+## Committed roadmap — full Sandcastle parity, built provider-first
+
+As of 2026-06-17 the project has **committed** to reaching Sandcastle parity (this is
+no longer a pure menu). The build order is fixed by the dependency graph — `init`
+scaffolding composes everything else, so it lands last:
+
+1. **Podman sandbox provider** (this slice) — factory+handle protocol, long-lived
+   container, `userns: keep-id`, same-path bind mount, SELinux flags, `mounts`, `cpus`.
+2. **`build-image` / `remove-image` + derived default image name** — needs (1).
+3. **Multi-agent registry** (§4) — init picks an agent + writes its Containerfile.
+4. **Worktrees + `copyToWorktree`** (§2) — init templates reference them.
+5. **Issue-tracker subsystem** (§7) — the `{{LIST_TASKS_COMMAND}}` substitution.
+6. **Orchestration-template surface** — the `main.ts`-equivalent pysolated lacks.
+7. **`init` scaffolding** (§7) — composes 2–6.
+
+The earlier "next slice is Docker" note is superseded: pysolated goes **Podman-first**
+(rootless + keep-id is the stronger isolation story and avoids build-arg UID alignment).
