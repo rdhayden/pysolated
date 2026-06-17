@@ -1,9 +1,19 @@
 # pysolated
 
-A Python toolkit that orchestrates AI coding agents inside sandboxes. A Python
+A Python toolkit that orchestrates AI coding agents inside sandboxes to enable automated Ralph like loops in sequence or in parralel for example to automate the completion of tickets on a backlog marked as not needing humans in the loop, or to spin up and down isolated agents to check code in continuous integration loops. 
+
+A Python
 reimagining of [Sandcastle](https://github.com/ai-hero-dev/sandcastle); see
 [`CONTEXT.md`](CONTEXT.md) for the vocabulary and [`docs/`](docs) for the PRD and
 ADRs.
+
+## Why pysolated
+
+There are alternatives that may be better in specific circumstances. To understand when pysolated is appropriate consider when not to use platform specific tools like bubblewrap and seatbelt or AI agent specific tools like Claude's /sandbox.
+
+If you are using multiple different coding agents such as Claude and Codex and need to run on multiple different platforms such as Linux, MacOS or cloud hosted sandbox providers, and you want a consistent process in all cases, the pysolated will do the trick.
+
+Why not use Sandcastle? If you are comfortable with Node or need to programatically instantiate agent loops from Typescript/Javascript code then Sancastle is the better choice. If you are more comfortable with Python or need to orchestrate agent loops from Python code, pysolate is functionally equivalent at the time of publication but built in Python
 
 ## Status
 
