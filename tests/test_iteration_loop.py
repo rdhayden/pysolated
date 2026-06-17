@@ -44,7 +44,8 @@ class ScriptedSandbox:
     """Emits a different list of stdout lines on each agent invocation.
 
     Git calls (`rev-parse`, `rev-list`) return canned responses so the
-    orchestrator's branch lookup and commit collection don't blow up.
+    orchestrator's branch lookup and commit collection don't blow up. Doubles
+    as both provider and live handle (`create()` returns self).
     """
 
     name = "scripted-sandbox"
@@ -62,6 +63,13 @@ class ScriptedSandbox:
         self._head_sha = head_sha
         self._invocation = 0
         self.exec_calls: list[dict] = []
+        self.closed = False
+
+    async def create(self, work_dir: str) -> "ScriptedSandbox":
+        return self
+
+    async def close(self) -> None:
+        self.closed = True
 
     async def exec(
         self,

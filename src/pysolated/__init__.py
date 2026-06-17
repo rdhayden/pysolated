@@ -17,6 +17,7 @@ from .core import (
     Display,
     ExecResult,
     RunResult,
+    Sandbox,
     SandboxProvider,
     SessionIdEvent,
     Severity,
@@ -43,7 +44,7 @@ from .prompts import (
     resolve_prompt,
     substitute_arguments,
 )
-from .sandboxes import NoSandbox, no_sandbox
+from .sandboxes import NoSandbox, NoSandboxHandle, no_sandbox
 from .structured_output import (
     Output,
     OutputDefinition,
@@ -61,6 +62,7 @@ __all__ = [
     "ClaudeCode",
     "no_sandbox",
     "NoSandbox",
+    "NoSandboxHandle",
     "PermissionMode",
     # Display
     "TerminalDisplay",
@@ -68,6 +70,7 @@ __all__ = [
     # Seams (Protocols)
     "AgentProvider",
     "SandboxProvider",
+    "Sandbox",
     "Display",
     # Pure parsers / matchers
     "parse_stream_line",

@@ -62,6 +62,13 @@ class TimedSandbox:
         self._timed_lines = timed_lines
         self._hang = hang_forever
         self._branch = branch
+        self.closed = False
+
+    async def create(self, work_dir: str) -> "TimedSandbox":
+        return self
+
+    async def close(self) -> None:
+        self.closed = True
 
     async def exec(
         self,

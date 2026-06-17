@@ -44,7 +44,12 @@ class FakeAgent:
 
 
 class FakeSandbox:
-    """Replays scripted stdout lines and answers git branch queries."""
+    """Replays scripted stdout lines and answers git branch queries.
+
+    Doubles as both provider and live handle (`create()` returns self) so
+    these tests can share one instance — the orchestrator's lifecycle code
+    is exercised by the dedicated lifecycle tests, not here.
+    """
 
     name = "fake-sandbox"
     env: dict[str, str] = {}
@@ -56,6 +61,13 @@ class FakeSandbox:
         self._branch = branch
         self._exit_code = exit_code
         self.exec_calls: list[dict] = []
+        self.closed = False
+
+    async def create(self, work_dir: str) -> "FakeSandbox":
+        return self
+
+    async def close(self) -> None:
+        self.closed = True
 
     async def exec(
         self,

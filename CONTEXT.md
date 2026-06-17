@@ -15,7 +15,10 @@ _Avoid_: "Sandcastle" (the TypeScript original), "the tool", "the CLI".
 
 **Sandbox**:
 The isolation boundary around the **agent** -- a container, VM, or similar
-environment that constrains the **agent**'s access.
+environment that constrains the **agent**'s access. The *live* object: created by
+a **sandbox provider** for a single **run**, it owns the running environment, is
+the thing the orchestrator `exec`s commands into, and is torn down when the run
+ends. Distinct from the **sandbox provider** that builds it.
 _Avoid_: "container" (too specific), "workspace".
 
 **Host**:
@@ -34,8 +37,10 @@ A pluggable implementation that builds commands and parses output for a specific
 _Avoid_: "agent adapter", "agent driver".
 
 **Sandbox provider**:
-A pluggable implementation that creates and manages a **sandbox**, passed to
-`run()` via the `sandbox` argument.
+A pluggable *factory* for **sandboxes**, passed to `run()` via the `sandbox`
+argument. The caller builds and configures it once (image, mounts, limits); the
+orchestrator asks it to create a fresh **sandbox** per **run**. The provider holds
+configuration; the **sandbox** it creates holds the live environment.
 _Avoid_: "backend", "runtime".
 
 **No-sandbox provider**:

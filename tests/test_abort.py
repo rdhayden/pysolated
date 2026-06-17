@@ -60,6 +60,13 @@ class HangingSandbox:
         self._branch = branch
         self.agent_exec_started = asyncio.Event()
         self.agent_exec_cancelled = False
+        self.closed = False
+
+    async def create(self, work_dir: str) -> "HangingSandbox":
+        return self
+
+    async def close(self) -> None:
+        self.closed = True
 
     async def exec(
         self,
@@ -119,9 +126,16 @@ class CountingSandbox:
         self.agent_calls = 0
         self.first_iteration_done = asyncio.Event()
         self._continue = asyncio.Event()
+        self.closed = False
 
     def allow_next_iteration(self) -> None:
         self._continue.set()
+
+    async def create(self, work_dir: str) -> "CountingSandbox":
+        return self
+
+    async def close(self) -> None:
+        self.closed = True
 
     async def exec(
         self,
@@ -205,14 +219,16 @@ async def test_signal_kills_real_host_subprocess(tmp_path) -> None:
     """
     # Seed a git repo so the orchestrator's pre/post-run git probes succeed.
     sandbox = no_sandbox()
+    seeding_handle = await sandbox.create(work_dir=str(tmp_path))
     for argv in (
         ["git", "init", "-q"],
         ["git", "config", "user.email", "t@t"],
         ["git", "config", "user.name", "t"],
         ["git", "commit", "--allow-empty", "-q", "-m", "init"],
     ):
-        result = await sandbox.exec(argv, cwd=str(tmp_path))
+        result = await seeding_handle.exec(argv, cwd=str(tmp_path))
         assert result.exit_code == 0, result.stderr
+    await seeding_handle.close()
 
     # The agent's "command" is a Python subprocess that prints a sentinel PID
     # line (so we know it's running) then sleeps long enough that finishing

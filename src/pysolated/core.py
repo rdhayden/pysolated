@@ -153,19 +153,20 @@ class AgentProvider(Protocol):
 
 
 @runtime_checkable
-class SandboxProvider(Protocol):
-    """Creates and runs commands inside a sandbox.
+class Sandbox(Protocol):
+    """A live sandbox environment, returned by `SandboxProvider.create()`.
+
+    Owns the running environment for one `run()` — the host subprocess on
+    `no_sandbox`, a long-lived container on a future container provider. Created
+    once and `close()`d in a `finally` that covers every exit path (success,
+    exception, idle-timeout, abort, Ctrl-C). `close()` MUST be idempotent: the
+    orchestrator calls it in `finally`, and a per-handle `atexit` backstop may
+    call it again on abnormal exit.
 
     `exec` MUST stream stdout line-by-line via `on_line` as it arrives — that is
-    how live feedback (and, in later slices, idle timeouts) work. A buffered impl
-    that only calls `on_line` after the process exits does not satisfy the contract.
+    how live feedback (and idle timeouts) work. A buffered impl that only calls
+    `on_line` after the process exits does not satisfy the contract.
     """
-
-    @property
-    def name(self) -> str: ...
-
-    @property
-    def env(self) -> dict[str, str]: ...
 
     async def exec(
         self,
@@ -175,6 +176,29 @@ class SandboxProvider(Protocol):
         cwd: str | None = None,
         on_line: Callable[[str], None] | None = None,
     ) -> ExecResult: ...
+
+    async def close(self) -> None: ...
+
+
+@runtime_checkable
+class SandboxProvider(Protocol):
+    """Factory for sandboxes — frozen configuration with one method: `create()`.
+
+    Splitting the seam into a factory and a live handle (ADR 0003) lets
+    long-lived providers own a single environment across a run (`podman run -d`
+    once, many `podman exec`, `podman rm -f` at `close()`) while keeping
+    providers frozen and concurrency-safe — each `create()` yields an
+    independent sandbox, so one configured provider can drive concurrent runs
+    without state corruption.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def env(self) -> dict[str, str]: ...
+
+    async def create(self, work_dir: str) -> Sandbox: ...
 
 
 # ---------------------------------------------------------------------------

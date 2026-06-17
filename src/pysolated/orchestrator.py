@@ -21,10 +21,11 @@ fired (or `None` when max-iterations was reached). `RunResult.commits` is the
 from __future__ import annotations
 
 import asyncio
+import atexit
 import os
 import time
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from .core import (
     Display,
     ExecResult,
     RunResult,
+    Sandbox,
     SandboxProvider,
     SessionIdEvent,
     StreamEvent,
@@ -184,83 +186,102 @@ async def run(
     signals = _normalize_signals(completion_signal)
 
     disp.intro(name or "pysolated")
-    branch = await _current_branch(sandbox, work_dir)
-    pre_run_head = await _head_sha(sandbox, work_dir)
 
-    resolved_prompt = await resolve_prompt(
-        inline=prompt,
-        file=prompt_file,
-        user_args=prompt_args,
-        built_in_args=_built_in_prompt_args(branch),
-        executor=_make_prompt_executor(sandbox, work_dir),
-    )
-    if output is not None:
-        opening_tag = f"<{output.tag}>"
-        if opening_tag not in resolved_prompt:
-            # Caller-owned prompt: pysolated does NOT inject an instruction
-            # describing the tag, so a missing opening tag almost certainly
-            # means the prompt was written without the required instruction.
-            # Fail before the agent runs to avoid paying for guaranteed failure.
-            raise ValueError(
-                f"structured output requires the resolved prompt to contain "
-                f"the opening tag {opening_tag!r}; none was found"
-            )
+    # Create the live sandbox handle once and tear it down in `finally` no
+    # matter how the run exits (success, exception, idle-timeout, abort,
+    # Ctrl-C). The `atexit` backstop catches abnormal interpreter shutdown —
+    # e.g. an unhandled error in the calling code after `run()` returns its
+    # exception path — so a long-lived sandbox can't leak between processes.
+    handle = await sandbox.create(work_dir)
+    atexit_cb = _register_atexit_close(handle)
+    try:
+        branch = await _current_branch(handle, work_dir)
+        pre_run_head = await _head_sha(handle, work_dir)
 
-    accumulated_stdout: list[str] = []
-    accumulated_prose: list[str] = []
-    matched_signal: str | None = None
-    iterations_done = 0
-
-    for iteration_num in range(1, max_iterations + 1):
-        if signal is not None and signal.is_set():
-            disp.status("Run aborted by signal", "warn")
-            raise asyncio.CancelledError("run aborted by signal")
-        iterations_done = iteration_num
-        disp.status(f"Iteration {iteration_num}/{max_iterations}", "info")
-
-        outcome = await _run_iteration(
-            agent=agent,
-            sandbox=sandbox,
-            prompt=resolved_prompt,
-            cwd=work_dir,
-            completion_signals=signals,
-            idle_timeout_seconds=idle_timeout_seconds,
-            completion_timeout_seconds=completion_timeout_seconds,
-            idle_warning_interval_seconds=idle_warning_interval_seconds,
-            display=disp,
-            abort_signal=signal,
+        resolved_prompt = await resolve_prompt(
+            inline=prompt,
+            file=prompt_file,
+            user_args=prompt_args,
+            built_in_args=_built_in_prompt_args(branch),
+            executor=_make_prompt_executor(handle, work_dir),
         )
-        accumulated_stdout.append(outcome.stdout)
-        accumulated_prose.append(outcome.agent_text)
-        if outcome.matched_signal is not None:
-            matched_signal = outcome.matched_signal
-            break
+        if output is not None:
+            opening_tag = f"<{output.tag}>"
+            if opening_tag not in resolved_prompt:
+                # Caller-owned prompt: pysolated does NOT inject an instruction
+                # describing the tag, so a missing opening tag almost certainly
+                # means the prompt was written without the required instruction.
+                # Fail before the agent runs to avoid paying for guaranteed failure.
+                raise ValueError(
+                    f"structured output requires the resolved prompt to contain "
+                    f"the opening tag {opening_tag!r}; none was found"
+                )
 
-    stdout = "\n".join(accumulated_stdout)
-    prose = "\n".join(accumulated_prose)
-    commits = await _commits_since(sandbox, work_dir, pre_run_head)
-    usage = agent.parse_session_usage(stdout)
+        accumulated_stdout: list[str] = []
+        accumulated_prose: list[str] = []
+        matched_signal: str | None = None
+        iterations_done = 0
 
-    # Extract against the agent's decoded prose, not the raw stream-json.
-    # The tag's inner JSON arrives JSON-escaped (quotes backslash-escaped) on
-    # the wire; only the decoded text events carry it in its original shape.
-    extracted_output = (
-        extract_structured_output(prose, output) if output is not None else None
-    )
+        for iteration_num in range(1, max_iterations + 1):
+            if signal is not None and signal.is_set():
+                disp.status("Run aborted by signal", "warn")
+                raise asyncio.CancelledError("run aborted by signal")
+            iterations_done = iteration_num
+            disp.status(f"Iteration {iteration_num}/{max_iterations}", "info")
 
-    disp.status("Run complete", "success")
-    disp.summary("Run summary", _summary_rows(branch, usage, matched_signal, commits))
+            outcome = await _run_iteration(
+                agent=agent,
+                sandbox=handle,
+                prompt=resolved_prompt,
+                cwd=work_dir,
+                completion_signals=signals,
+                idle_timeout_seconds=idle_timeout_seconds,
+                completion_timeout_seconds=completion_timeout_seconds,
+                idle_warning_interval_seconds=idle_warning_interval_seconds,
+                display=disp,
+                abort_signal=signal,
+            )
+            accumulated_stdout.append(outcome.stdout)
+            accumulated_prose.append(outcome.agent_text)
+            if outcome.matched_signal is not None:
+                matched_signal = outcome.matched_signal
+                break
 
-    return RunResult(
-        iterations=iterations_done,
-        stdout=stdout,
-        branch=branch,
-        usage=usage,
-        completion_signal=matched_signal,
-        commits=commits,
-        output=extracted_output,
-        log_file_path=log_file_path,
-    )
+        stdout = "\n".join(accumulated_stdout)
+        prose = "\n".join(accumulated_prose)
+        commits = await _commits_since(handle, work_dir, pre_run_head)
+        usage = agent.parse_session_usage(stdout)
+
+        # Extract against the agent's decoded prose, not the raw stream-json.
+        # The tag's inner JSON arrives JSON-escaped (quotes backslash-escaped)
+        # on the wire; only the decoded text events carry it in its original shape.
+        extracted_output = (
+            extract_structured_output(prose, output) if output is not None else None
+        )
+
+        disp.status("Run complete", "success")
+        disp.summary(
+            "Run summary", _summary_rows(branch, usage, matched_signal, commits)
+        )
+
+        return RunResult(
+            iterations=iterations_done,
+            stdout=stdout,
+            branch=branch,
+            usage=usage,
+            completion_signal=matched_signal,
+            commits=commits,
+            output=extracted_output,
+            log_file_path=log_file_path,
+        )
+    finally:
+        atexit.unregister(atexit_cb)
+        # Best-effort close: a teardown failure must not mask the real outcome
+        # (return value or exception) the orchestrator is propagating.
+        try:
+            await handle.close()
+        except Exception:  # pragma: no cover - teardown is best-effort
+            pass
 
 
 def _normalize_signals(
@@ -281,7 +302,7 @@ def _built_in_prompt_args(branch: str) -> dict[str, str]:
     return {"branch": branch}
 
 
-def _make_prompt_executor(sandbox: SandboxProvider, cwd: str) -> PromptExecutor:
+def _make_prompt_executor(sandbox: Sandbox, cwd: str) -> PromptExecutor:
     """Wrap the sandbox seam as the executor used by `expand_shell_expressions`.
 
     Each `` !`command` `` runs through `sh -c` so the user can write the
@@ -296,10 +317,29 @@ def _make_prompt_executor(sandbox: SandboxProvider, cwd: str) -> PromptExecutor:
     return execute
 
 
+def _register_atexit_close(handle: Sandbox) -> Callable[[], None]:
+    """Register an `atexit` backstop that closes `handle` on interpreter shutdown.
+
+    Returns the registered callback so the orchestrator's `finally` can
+    unregister it once the normal teardown path has run. `atexit` runs on
+    normal interpreter exit (including unhandled exceptions and `SystemExit`)
+    but not on SIGKILL — that gap is acknowledged in `docs/futures/features.md`.
+    """
+
+    def _close_sync() -> None:
+        try:
+            asyncio.run(handle.close())
+        except Exception:  # pragma: no cover - teardown is best-effort
+            pass
+
+    atexit.register(_close_sync)
+    return _close_sync
+
+
 async def _run_iteration(
     *,
     agent: AgentProvider,
-    sandbox: SandboxProvider,
+    sandbox: Sandbox,
     prompt: str,
     cwd: str,
     completion_signals: tuple[str, ...],
@@ -490,7 +530,7 @@ async def _timer_loop(
                 return
 
 
-async def _current_branch(sandbox: SandboxProvider, cwd: str) -> str:
+async def _current_branch(sandbox: Sandbox, cwd: str) -> str:
     """Resolve the current git branch through the sandbox seam.
 
     Returns "" when the directory is not a git repo (the agent can still run).
@@ -501,7 +541,7 @@ async def _current_branch(sandbox: SandboxProvider, cwd: str) -> str:
     return result.stdout.strip()
 
 
-async def _head_sha(sandbox: SandboxProvider, cwd: str) -> str:
+async def _head_sha(sandbox: Sandbox, cwd: str) -> str:
     """Resolve `HEAD`'s SHA. Returns "" outside a git repo or on empty history."""
     result = await sandbox.exec(["git", "rev-parse", "HEAD"], cwd=cwd)
     if result.exit_code != 0:
@@ -509,9 +549,7 @@ async def _head_sha(sandbox: SandboxProvider, cwd: str) -> str:
     return result.stdout.strip()
 
 
-async def _commits_since(
-    sandbox: SandboxProvider, cwd: str, pre_run_head: str
-) -> list[str]:
+async def _commits_since(sandbox: Sandbox, cwd: str, pre_run_head: str) -> list[str]:
     """Return SHAs created between the pre-run `HEAD` and the post-run `HEAD`.
 
     Empty when nothing was committed, or when the directory wasn't a git repo
