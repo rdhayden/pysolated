@@ -18,7 +18,9 @@ def test_truncates_long_stderr_to_a_tail() -> None:
     raw blob of thousands of lines drowns the signal — the error promises a
     *tail*, not the full stream.
     """
-    long_stderr = "\n".join(f"noise line {i}" for i in range(500)) + "\nFINAL CRASH MESSAGE"
+    long_stderr = (
+        "\n".join(f"noise line {i}" for i in range(500)) + "\nFINAL CRASH MESSAGE"
+    )
 
     err = AgentExecutionError(exit_code=1, stderr=long_stderr, stdout_tail="")
 

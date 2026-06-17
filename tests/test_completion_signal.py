@@ -79,7 +79,5 @@ CASES: list[tuple[str, str, str | list[str], str | None]] = [
 @pytest.mark.parametrize(
     "desc,content,signals,expected", CASES, ids=[c[0] for c in CASES]
 )
-def test_match_completion_signal(
-    desc: str, content: str, signals, expected
-) -> None:
+def test_match_completion_signal(desc: str, content: str, signals, expected) -> None:
     assert match_completion_signal(content, signals) == expected

@@ -27,27 +27,37 @@ CASES: list[tuple[str, str, list[StreamEvent]]] = [
     ),
     (
         "multiple text blocks concatenated",
-        _assistant([{"type": "text", "text": "Hello "}, {"type": "text", "text": "world"}]),
+        _assistant(
+            [{"type": "text", "text": "Hello "}, {"type": "text", "text": "world"}]
+        ),
         [TextEvent("Hello world")],
     ),
     (
         "allowlisted Bash tool_use",
-        _assistant([{"type": "tool_use", "name": "Bash", "input": {"command": "ls -la"}}]),
+        _assistant(
+            [{"type": "tool_use", "name": "Bash", "input": {"command": "ls -la"}}]
+        ),
         [ToolCallEvent("Bash", "ls -la")],
     ),
     (
         "allowlisted WebSearch tool_use",
-        _assistant([{"type": "tool_use", "name": "WebSearch", "input": {"query": "python"}}]),
+        _assistant(
+            [{"type": "tool_use", "name": "WebSearch", "input": {"query": "python"}}]
+        ),
         [ToolCallEvent("WebSearch", "python")],
     ),
     (
         "allowlisted WebFetch tool_use",
-        _assistant([{"type": "tool_use", "name": "WebFetch", "input": {"url": "http://x"}}]),
+        _assistant(
+            [{"type": "tool_use", "name": "WebFetch", "input": {"url": "http://x"}}]
+        ),
         [ToolCallEvent("WebFetch", "http://x")],
     ),
     (
         "allowlisted Agent tool_use",
-        _assistant([{"type": "tool_use", "name": "Agent", "input": {"description": "go"}}]),
+        _assistant(
+            [{"type": "tool_use", "name": "Agent", "input": {"description": "go"}}]
+        ),
         [ToolCallEvent("Agent", "go")],
     ),
     (
@@ -62,7 +72,9 @@ CASES: list[tuple[str, str, list[StreamEvent]]] = [
     ),
     (
         "non-allowlisted tool dropped",
-        _assistant([{"type": "tool_use", "name": "Read", "input": {"file_path": "/x"}}]),
+        _assistant(
+            [{"type": "tool_use", "name": "Read", "input": {"file_path": "/x"}}]
+        ),
         [],
     ),
     (

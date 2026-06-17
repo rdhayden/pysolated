@@ -24,6 +24,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
+from typing import Literal
 
 from pathlib import Path
 
@@ -43,7 +44,7 @@ from .core import (
 )
 from .display import FileDisplay, TerminalDisplay
 from .errors import AgentExecutionError, IdleTimeoutError
-from .prompts import resolve_prompt
+from .prompts import PromptExecutor, resolve_prompt
 from .structured_output import (
     OutputDefinition,
     extract_structured_output,
@@ -71,6 +72,34 @@ class _IterationOutcome:
     agent_text: str
     matched_signal: str | None
     grace_expired: bool
+
+
+@dataclass
+class _IterationState:
+    """Mutable clock/signal state shared between `on_line` and `_timer_loop`.
+
+    Passed by reference so the streaming callback and the timer coroutine see
+    each other's updates: `on_line` advances `last_line_at`/`warning_anchor_at`
+    and records the matched signal; `_timer_loop` reads them to decide when the
+    idle or completion-grace deadline has passed. All times are
+    `time.monotonic()` seconds.
+    """
+
+    matched_signal: str | None
+    last_line_at: float
+    signal_seen_at: float | None
+    warning_anchor_at: float
+
+
+@dataclass
+class _TimerOutcome:
+    """How `_timer_loop` ended, read back by the iteration once the race settles.
+
+    `"running"` until a deadline fires; `"idle"` when the idle timeout elapsed
+    with no completion signal; `"grace"` when the post-signal grace window expired.
+    """
+
+    kind: Literal["running", "idle", "grace"] = "running"
 
 
 async def run(
@@ -220,9 +249,7 @@ async def run(
     )
 
     disp.status("Run complete", "success")
-    disp.summary(
-        "Run summary", _summary_rows(branch, usage, matched_signal, commits)
-    )
+    disp.summary("Run summary", _summary_rows(branch, usage, matched_signal, commits))
 
     return RunResult(
         iterations=iterations_done,
@@ -254,7 +281,7 @@ def _built_in_prompt_args(branch: str) -> dict[str, str]:
     return {"branch": branch}
 
 
-def _make_prompt_executor(sandbox: SandboxProvider, cwd: str):
+def _make_prompt_executor(sandbox: SandboxProvider, cwd: str) -> PromptExecutor:
     """Wrap the sandbox seam as the executor used by `expand_shell_expressions`.
 
     Each `` !`command` `` runs through `sh -c` so the user can write the
@@ -293,19 +320,20 @@ async def _run_iteration(
     """
     accumulated: list[str] = []
     agent_text: list[str] = []
-    state: dict = {
-        "matched_signal": None,
-        "last_line_at": time.monotonic(),
-        "signal_seen_at": None,
-        "warning_anchor_at": time.monotonic(),
-    }
+    now0 = time.monotonic()
+    state = _IterationState(
+        matched_signal=None,
+        last_line_at=now0,
+        signal_seen_at=None,
+        warning_anchor_at=now0,
+    )
     line_event = asyncio.Event()
 
     def on_line(line: str) -> None:
         now = time.monotonic()
         accumulated.append(line)
-        state["last_line_at"] = now
-        state["warning_anchor_at"] = now
+        state.last_line_at = now
+        state.warning_anchor_at = now
         for event in agent.parse_stream_line(line):
             if isinstance(event, TextEvent):
                 agent_text.append(event.text)
@@ -313,13 +341,11 @@ async def _run_iteration(
         # Match only against the agent's own prose — never tool inputs/outputs.
         # Otherwise the agent merely reading a file that quotes the signal
         # (this repo's README, source, and docs all do) would trip completion.
-        if state["matched_signal"] is None:
-            matched = match_completion_signal(
-                "\n".join(agent_text), completion_signals
-            )
+        if state.matched_signal is None:
+            matched = match_completion_signal("\n".join(agent_text), completion_signals)
             if matched is not None:
-                state["matched_signal"] = matched
-                state["signal_seen_at"] = now
+                state.matched_signal = matched
+                state.signal_seen_at = now
                 display.status(
                     f"Completion signal seen ({matched!r}); "
                     f"grace window {completion_timeout_seconds:g}s",
@@ -331,7 +357,7 @@ async def _run_iteration(
     exec_task = asyncio.create_task(
         sandbox.exec(command.argv, stdin=command.stdin, cwd=cwd, on_line=on_line)
     )
-    timer_outcome: dict = {"kind": "running"}
+    timer_outcome = _TimerOutcome()
     timer_task = asyncio.create_task(
         _timer_loop(
             state=state,
@@ -343,15 +369,18 @@ async def _run_iteration(
             display=display,
         )
     )
-    abort_task: asyncio.Task | None = None
-    race_tasks: list[asyncio.Task] = [exec_task, timer_task]
+    abort_task: asyncio.Task[bool] | None = None
+    race_tasks: list[
+        asyncio.Task[ExecResult] | asyncio.Task[None] | asyncio.Task[bool]
+    ] = [
+        exec_task,
+        timer_task,
+    ]
     if abort_signal is not None:
         abort_task = asyncio.create_task(abort_signal.wait())
         race_tasks.append(abort_task)
 
-    done, pending = await asyncio.wait(
-        race_tasks, return_when=asyncio.FIRST_COMPLETED
-    )
+    done, pending = await asyncio.wait(race_tasks, return_when=asyncio.FIRST_COMPLETED)
     for task in pending:
         task.cancel()
     for task in pending:
@@ -379,19 +408,17 @@ async def _run_iteration(
         return _IterationOutcome(
             stdout=stdout,
             agent_text=prose,
-            matched_signal=state["matched_signal"],
+            matched_signal=state.matched_signal,
             grace_expired=False,
         )
 
     # Timer decided the iteration's fate first.
-    kind = timer_outcome["kind"]
+    kind = timer_outcome.kind
     if kind == "idle":
         display.status(
             f"Idle timeout — no output for {idle_timeout_seconds:g}s", "error"
         )
-        raise IdleTimeoutError(
-            timeout_seconds=idle_timeout_seconds, stdout_tail=stdout
-        )
+        raise IdleTimeoutError(timeout_seconds=idle_timeout_seconds, stdout_tail=stdout)
     if kind == "grace":
         display.status(
             "Completion grace expired — agent still hanging, forcing success",
@@ -400,23 +427,23 @@ async def _run_iteration(
         return _IterationOutcome(
             stdout=stdout,
             agent_text=prose,
-            matched_signal=state["matched_signal"],
+            matched_signal=state.matched_signal,
             grace_expired=True,
         )
     # Unreachable in practice — defensive default.
     return _IterationOutcome(
         stdout=stdout,
         agent_text=prose,
-        matched_signal=state["matched_signal"],
+        matched_signal=state.matched_signal,
         grace_expired=False,
     )
 
 
 async def _timer_loop(
     *,
-    state: dict,
+    state: _IterationState,
     line_event: asyncio.Event,
-    timer_outcome: dict,
+    timer_outcome: _TimerOutcome,
     idle_timeout_seconds: float,
     completion_timeout_seconds: float,
     idle_warning_interval_seconds: float,
@@ -430,14 +457,13 @@ async def _timer_loop(
     """
     while True:
         now = time.monotonic()
-        if state["matched_signal"] is None:
-            idle_deadline = state["last_line_at"] + idle_timeout_seconds
-            warn_deadline = (
-                state["warning_anchor_at"] + idle_warning_interval_seconds
-            )
+        if state.matched_signal is None:
+            idle_deadline = state.last_line_at + idle_timeout_seconds
+            warn_deadline = state.warning_anchor_at + idle_warning_interval_seconds
             next_wake = min(idle_deadline, warn_deadline)
         else:
-            next_wake = state["signal_seen_at"] + completion_timeout_seconds
+            assert state.signal_seen_at is not None
+            next_wake = state.signal_seen_at + completion_timeout_seconds
 
         wait_for = max(0.0, next_wake - now)
         line_event.clear()
@@ -449,17 +475,18 @@ async def _timer_loop(
             pass
 
         now = time.monotonic()
-        if state["matched_signal"] is None:
-            if now - state["last_line_at"] >= idle_timeout_seconds:
-                timer_outcome["kind"] = "idle"
+        if state.matched_signal is None:
+            if now - state.last_line_at >= idle_timeout_seconds:
+                timer_outcome.kind = "idle"
                 return
-            elapsed = now - state["last_line_at"]
+            elapsed = now - state.last_line_at
             minutes = max(1, int(elapsed // 60))
             display.status(f"agent idle for {minutes} minutes", "warn")
-            state["warning_anchor_at"] = now
+            state.warning_anchor_at = now
         else:
-            if now - state["signal_seen_at"] >= completion_timeout_seconds:
-                timer_outcome["kind"] = "grace"
+            assert state.signal_seen_at is not None
+            if now - state.signal_seen_at >= completion_timeout_seconds:
+                timer_outcome.kind = "grace"
                 return
 
 
@@ -468,9 +495,7 @@ async def _current_branch(sandbox: SandboxProvider, cwd: str) -> str:
 
     Returns "" when the directory is not a git repo (the agent can still run).
     """
-    result = await sandbox.exec(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd
-    )
+    result = await sandbox.exec(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
     if result.exit_code != 0:
         return ""
     return result.stdout.strip()
@@ -494,9 +519,7 @@ async def _commits_since(
     """
     if not pre_run_head:
         return []
-    result = await sandbox.exec(
-        ["git", "rev-list", f"{pre_run_head}..HEAD"], cwd=cwd
-    )
+    result = await sandbox.exec(["git", "rev-list", f"{pre_run_head}..HEAD"], cwd=cwd)
     if result.exit_code != 0:
         return []
     return [sha for sha in (line.strip() for line in result.stdout.splitlines()) if sha]
@@ -520,9 +543,7 @@ def _summary_rows(
 ) -> dict[str, str]:
     rows: dict[str, str] = {"Branch": branch or "(unknown)"}
     rows["Completion signal"] = completion_signal or "(none — max iterations)"
-    rows["Commits"] = (
-        ", ".join(sha[:7] for sha in commits) if commits else "(none)"
-    )
+    rows["Commits"] = ", ".join(sha[:7] for sha in commits) if commits else "(none)"
     if usage is None:
         rows["Token usage"] = "unavailable"
     else:

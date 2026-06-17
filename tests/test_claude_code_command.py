@@ -35,7 +35,9 @@ def test_prompt_delivered_on_stdin_not_argv() -> None:
 
 def test_model_is_selectable() -> None:
     command = _build(claude_code("claude-haiku-4-5-20251001"))
-    assert command.argv[command.argv.index("--model") + 1] == "claude-haiku-4-5-20251001"
+    assert (
+        command.argv[command.argv.index("--model") + 1] == "claude-haiku-4-5-20251001"
+    )
 
 
 def test_permission_mode_replaces_skip_permissions() -> None:

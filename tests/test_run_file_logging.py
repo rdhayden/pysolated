@@ -6,7 +6,6 @@ end-to-end without a real subprocess.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -58,10 +57,10 @@ async def test_log_file_routes_progress_and_agent_output_to_file(
         log_file=log_path,
     )
     contents = log_path.read_text()
-    assert "agent says hello" in contents       # agent prose written
-    assert "Bash" in contents                   # tool call written
-    assert "Iteration 1/1" in contents          # status line written
-    assert "Run summary" in contents            # summary written
+    assert "agent says hello" in contents  # agent prose written
+    assert "Bash" in contents  # tool call written
+    assert "Iteration 1/1" in contents  # status line written
+    assert "Run summary" in contents  # summary written
 
 
 async def test_log_file_carries_run_name_in_header(tmp_path: Path) -> None:
@@ -89,9 +88,7 @@ async def test_log_file_status_lines_carry_run_name(tmp_path: Path) -> None:
         log_file=log_path,
     )
     iteration_line = next(
-        line
-        for line in log_path.read_text().splitlines()
-        if "Iteration 1/1" in line
+        line for line in log_path.read_text().splitlines() if "Iteration 1/1" in line
     )
     assert "[nightly]" in iteration_line
 

@@ -191,9 +191,7 @@ def _parse_prompt_args(items: list[str]) -> dict[str, str]:
     result: dict[str, str] = {}
     for raw in items:
         if "=" not in raw:
-            raise ValueError(
-                f"--prompt-arg must be KEY=VALUE (got {raw!r})"
-            )
+            raise ValueError(f"--prompt-arg must be KEY=VALUE (got {raw!r})")
         key, _, value = raw.partition("=")
         key = key.strip()
         if not key:

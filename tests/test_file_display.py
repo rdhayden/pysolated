@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from pysolated import Display, FileDisplay
 
@@ -77,9 +76,7 @@ def test_file_display_status_prefixes_name(tmp_path: Path) -> None:
     display = FileDisplay(log_path, name="alpha")
     display.status("Iteration 1/3", "info")
     line = next(
-        line
-        for line in log_path.read_text().splitlines()
-        if "Iteration 1/3" in line
+        line for line in log_path.read_text().splitlines() if "Iteration 1/3" in line
     )
     assert "[alpha]" in line
 
@@ -89,8 +86,6 @@ def test_file_display_status_no_name_no_prefix(tmp_path: Path) -> None:
     display = FileDisplay(log_path)
     display.status("Iteration 1/3", "info")
     line = next(
-        line
-        for line in log_path.read_text().splitlines()
-        if "Iteration 1/3" in line
+        line for line in log_path.read_text().splitlines() if "Iteration 1/3" in line
     )
     assert "[" not in line.replace("[info]", "")
