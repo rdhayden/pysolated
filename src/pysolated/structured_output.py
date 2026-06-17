@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Union
 
 from pydantic import BaseModel, ValidationError
 
@@ -189,7 +189,7 @@ def _unwrap_fences(text: str) -> str:
 
 def extract_structured_output(
     stdout: str, definition: OutputDefinition
-) -> Any:
+) -> str | BaseModel:
     """Extract the payload described by `definition` from `stdout`.
 
     - `OutputObject`: locates the last `<tag>...</tag>`, trims, unwraps a

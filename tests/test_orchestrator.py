@@ -49,7 +49,9 @@ class FakeSandbox:
     name = "fake-sandbox"
     env: dict[str, str] = {}
 
-    def __init__(self, lines: list[str], *, branch: str = "main", exit_code: int = 0) -> None:
+    def __init__(
+        self, lines: list[str], *, branch: str = "main", exit_code: int = 0
+    ) -> None:
         self._lines = lines
         self._branch = branch
         self._exit_code = exit_code
@@ -142,7 +144,12 @@ async def test_returns_frozen_run_result() -> None:
 async def test_inline_prompt_passed_verbatim() -> None:
     agent = FakeAgent([])
     sandbox = FakeSandbox([])
-    await run(agent=agent, sandbox=sandbox, prompt="  literal {{KEY}} !`cmd`  ", display=RecordingDisplay())
+    await run(
+        agent=agent,
+        sandbox=sandbox,
+        prompt="  literal {{KEY}} !`cmd`  ",
+        display=RecordingDisplay(),
+    )
     assert agent.built_options is not None
     assert agent.built_options.prompt == "  literal {{KEY}} !`cmd`  "
 
@@ -170,7 +177,9 @@ async def test_text_and_tool_events_stream_to_display() -> None:
 async def test_summary_shows_token_usage() -> None:
     lines = [_assistant([{"type": "text", "text": "ok"}], usage=USAGE)]
     display = RecordingDisplay()
-    await run(agent=FakeAgent(lines), sandbox=FakeSandbox(lines), prompt="go", display=display)
+    await run(
+        agent=FakeAgent(lines), sandbox=FakeSandbox(lines), prompt="go", display=display
+    )
     summary = next(c for c in display.calls if c[0] == "summary")
     rows = summary[2]
     assert rows["Output tokens"] == "43"
@@ -180,8 +189,16 @@ async def test_summary_shows_token_usage() -> None:
 async def test_cwd_threaded_to_agent_exec() -> None:
     lines = [_assistant([{"type": "text", "text": "ok"}])]
     sandbox = FakeSandbox(lines)
-    await run(agent=FakeAgent(lines), sandbox=sandbox, prompt="go", cwd="/work", display=RecordingDisplay())
-    agent_call = next(c for c in sandbox.exec_calls if c["argv"][:2] != ["git", "rev-parse"])
+    await run(
+        agent=FakeAgent(lines),
+        sandbox=sandbox,
+        prompt="go",
+        cwd="/work",
+        display=RecordingDisplay(),
+    )
+    agent_call = next(
+        c for c in sandbox.exec_calls if c["argv"][:2] != ["git", "rev-parse"]
+    )
     assert agent_call["cwd"] == "/work"
     assert agent_call["stdin"] == "go"
 
@@ -190,7 +207,12 @@ async def test_nonzero_exit_raises_agent_execution_error() -> None:
     lines = [_assistant([{"type": "text", "text": "partial"}])]
     sandbox = FakeSandbox(lines, exit_code=2)
     with pytest.raises(AgentExecutionError) as exc:
-        await run(agent=FakeAgent(lines), sandbox=sandbox, prompt="go", display=RecordingDisplay())
+        await run(
+            agent=FakeAgent(lines),
+            sandbox=sandbox,
+            prompt="go",
+            display=RecordingDisplay(),
+        )
     assert exc.value.exit_code == 2
 
 
@@ -203,7 +225,12 @@ async def test_nonzero_exit_carries_stderr_tail_for_diagnosis() -> None:
     lines = [_assistant([{"type": "text", "text": "halfway through"}])]
     sandbox = FakeSandbox(lines, exit_code=7)
     with pytest.raises(AgentExecutionError) as exc:
-        await run(agent=FakeAgent(lines), sandbox=sandbox, prompt="go", display=RecordingDisplay())
+        await run(
+            agent=FakeAgent(lines),
+            sandbox=sandbox,
+            prompt="go",
+            display=RecordingDisplay(),
+        )
     # FakeSandbox writes "boom" to stderr when exit_code != 0.
     assert "boom" in exc.value.stderr_tail
     assert "boom" in str(exc.value)
@@ -233,7 +260,12 @@ async def test_nonzero_exit_carries_stdout_tail_when_stderr_empty() -> None:
     lines = ['{"type":"text","text":"Error: missing config file"}']
     sandbox = StdoutOnlyFailureSandbox(lines)
     with pytest.raises(AgentExecutionError) as exc:
-        await run(agent=FakeAgent(lines), sandbox=sandbox, prompt="go", display=RecordingDisplay())
+        await run(
+            agent=FakeAgent(lines),
+            sandbox=sandbox,
+            prompt="go",
+            display=RecordingDisplay(),
+        )
     assert exc.value.exit_code == 4
     assert "missing config file" in exc.value.stdout_tail
 
@@ -241,6 +273,9 @@ async def test_nonzero_exit_carries_stdout_tail_when_stderr_empty() -> None:
 async def test_missing_usage_yields_none() -> None:
     lines = [_assistant([{"type": "text", "text": "no usage here"}])]
     result = await run(
-        agent=FakeAgent(lines), sandbox=FakeSandbox(lines), prompt="go", display=RecordingDisplay()
+        agent=FakeAgent(lines),
+        sandbox=FakeSandbox(lines),
+        prompt="go",
+        display=RecordingDisplay(),
     )
     assert result.usage is None

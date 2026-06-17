@@ -36,9 +36,7 @@ class CrashingAgent:
     def build_command(self, options: AgentCommandOptions) -> Command:
         # `sh -c` is a real subprocess. printf for portability — no trailing
         # interpretation surprises across platforms.
-        script = (
-            f'printf %s {self._stderr_message!r} >&2; exit {self._exit_code}'
-        )
+        script = f"printf %s {self._stderr_message!r} >&2; exit {self._exit_code}"
         return Command(argv=["sh", "-c", script])
 
     def parse_stream_line(self, line: str):

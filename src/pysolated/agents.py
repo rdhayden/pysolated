@@ -50,8 +50,10 @@ def parse_stream_line(line: str) -> list[StreamEvent]:
         return []
 
     message = obj.get("message")
-    if obj.get("type") == "assistant" and isinstance(message, dict) and isinstance(
-        message.get("content"), list
+    if (
+        obj.get("type") == "assistant"
+        and isinstance(message, dict)
+        and isinstance(message.get("content"), list)
     ):
         events: list[StreamEvent] = []
         texts: list[str] = []

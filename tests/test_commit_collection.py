@@ -8,18 +8,15 @@ hit a real repo on disk.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import subprocess
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
 from pysolated import (
     AgentCommandOptions,
     Command,
-    ExecResult,
     Severity,
     no_sandbox,
     parse_session_usage,
@@ -74,9 +71,7 @@ class CommittingAgent(NoopAgent):
         for i in range(self._n):
             path = self._cwd / f"f_{self._invocations}_{i}.txt"
             path.write_text("hello\n")
-            subprocess.run(
-                ["git", "-C", str(self._cwd), "add", path.name], check=True
-            )
+            subprocess.run(["git", "-C", str(self._cwd), "add", path.name], check=True)
             subprocess.run(
                 ["git", "-C", str(self._cwd), "commit", "-m", f"add {path.name}"],
                 check=True,
@@ -99,9 +94,7 @@ def git_repo(tmp_path: Path) -> Path:
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True
     )
-    subprocess.run(
-        ["git", "config", "user.name", "Test"], cwd=tmp_path, check=True
-    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
     (tmp_path / "seed.txt").write_text("seed\n")
     subprocess.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)

@@ -88,9 +88,7 @@ def make_executor(
 )
 def test_substitute_arguments_table(template, user_args, built_ins, expected) -> None:
     assert (
-        substitute_arguments(
-            template, user_args=user_args, built_in_args=built_ins
-        )
+        substitute_arguments(template, user_args=user_args, built_in_args=built_ins)
         == expected
     )
 
@@ -142,9 +140,7 @@ async def test_expand_shell_expressions_multiple_in_source_order() -> None:
             "echo b": ExecResult(exit_code=0, stdout="B\n", stderr=""),
         }
     )
-    out = await expand_shell_expressions(
-        "<!`echo a`|!`echo b`>", executor=executor
-    )
+    out = await expand_shell_expressions("<!`echo a`|!`echo b`>", executor=executor)
     assert out == "<A|B>"
     assert calls == ["echo a", "echo b"]
 
@@ -163,9 +159,7 @@ async def test_expand_shell_expressions_nonzero_exit_raises() -> None:
         }
     )
     with pytest.raises(PromptExpansionError) as exc:
-        await expand_shell_expressions(
-            "before !`fail-me` after", executor=executor
-        )
+        await expand_shell_expressions("before !`fail-me` after", executor=executor)
     assert exc.value.exit_code == 2
     assert exc.value.command == "fail-me"
     assert "boom" in str(exc.value)
@@ -181,9 +175,7 @@ async def test_expand_shell_expressions_stops_at_first_failure() -> None:
         }
     )
     with pytest.raises(PromptExpansionError):
-        await expand_shell_expressions(
-            "!`first` then !`second`", executor=executor
-        )
+        await expand_shell_expressions("!`first` then !`second`", executor=executor)
     assert calls == ["first"]
 
 
@@ -193,9 +185,7 @@ async def test_expand_shell_expressions_preserves_internal_newlines() -> None:
             "log": ExecResult(exit_code=0, stdout="line1\nline2\n", stderr=""),
         }
     )
-    out = await expand_shell_expressions(
-        "log:\n!`log`\n---", executor=executor
-    )
+    out = await expand_shell_expressions("log:\n!`log`\n---", executor=executor)
     # Only the final trailing newline is stripped; internal newlines stay.
     assert out == "log:\nline1\nline2\n---"
 

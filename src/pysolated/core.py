@@ -13,7 +13,7 @@ shell string.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from typing import Callable, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -134,8 +134,11 @@ class Display(Protocol):
 class AgentProvider(Protocol):
     """Builds commands and parses output for a specific agent (e.g. Claude Code)."""
 
-    name: str
-    env: dict[str, str]
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def env(self) -> dict[str, str]: ...
 
     def build_command(self, options: AgentCommandOptions) -> Command: ...
 
@@ -158,8 +161,11 @@ class SandboxProvider(Protocol):
     that only calls `on_line` after the process exits does not satisfy the contract.
     """
 
-    name: str
-    env: dict[str, str]
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def env(self) -> dict[str, str]: ...
 
     async def exec(
         self,
@@ -195,5 +201,5 @@ class RunResult(BaseModel):
     usage: Usage | None = None
     completion_signal: str | None = None
     commits: list[str] = Field(default_factory=list)
-    output: Any = None
+    output: str | BaseModel | None = None
     log_file_path: str | None = None

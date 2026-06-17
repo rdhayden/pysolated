@@ -140,8 +140,7 @@ async def test_prompt_file_template_is_substituted_and_expanded(
     # The fully-resolved prompt is what the agent receives on stdin.
     assert agent.built_options is not None
     assert (
-        agent.built_options.prompt
-        == "Refactor in auth on branch feat/x. Last: abc fix"
+        agent.built_options.prompt == "Refactor in auth on branch feat/x. Last: abc fix"
     )
     # Expansion was routed through the sandbox seam.
     assert sandbox.shell_calls == ["git log -1"]

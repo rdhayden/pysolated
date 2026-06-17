@@ -103,9 +103,7 @@ def test_object_mode_uses_last_occurrence_when_tag_repeats() -> None:
     follows what a human reader would assume is the final answer.
     """
     stdout = (
-        '<result>{"answer": 1}</result>\n'
-        "rethinking...\n"
-        '<result>{"answer": 2}</result>'
+        '<result>{"answer": 1}</result>\nrethinking...\n<result>{"answer": 2}</result>'
     )
     value = extract_structured_output(stdout, Output.object("result", Answer))
     assert value.answer == 2
@@ -264,7 +262,7 @@ def test_unbalanced_open_tag_alone_is_treated_as_missing() -> None:
     to guess and instead surfaces the same "tag not found" error so the
     caller can correct the prompt or re-run the agent.
     """
-    stdout = "<result>{\"answer\": 1}"  # no closing </result>
+    stdout = '<result>{"answer": 1}'  # no closing </result>
     with pytest.raises(StructuredOutputError) as exc:
         extract_structured_output(stdout, Output.object("result", Answer))
     assert exc.value.raw_matched is None

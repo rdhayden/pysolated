@@ -11,9 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
-def match_completion_signal(
-    content: str, signals: str | Iterable[str]
-) -> str | None:
+def match_completion_signal(content: str, signals: str | Iterable[str]) -> str | None:
     """Return the first signal that appears in `content`, else `None`.
 
     `signals` may be a single string or any iterable of candidate strings;

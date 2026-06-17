@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal as os_signal
 import time
 from typing import Callable
 

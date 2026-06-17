@@ -119,9 +119,7 @@ class SilentDisplay:
 
 def _agent_was_invoked(sandbox: FakeSandbox) -> bool:
     """True iff the sandbox saw the agent argv (any non-git exec call)."""
-    return any(
-        call["argv"][:1] != ["git"] for call in sandbox.exec_calls
-    )
+    return any(call["argv"][:1] != ["git"] for call in sandbox.exec_calls)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +134,7 @@ async def test_object_output_set_on_run_result() -> None:
     pulls it out and validates against the caller's model after the loop ends.
     """
     payload = _assistant(
-        [{"type": "text", "text": "Final: <result>{\"answer\": 42}</result>"}]
+        [{"type": "text", "text": 'Final: <result>{"answer": 42}</result>'}]
     )
     agent = FakeAgent([payload])
     sandbox = FakeSandbox([payload])
@@ -194,9 +192,7 @@ async def test_output_with_max_iterations_above_one_rejected_up_front() -> None:
     belongs to the iteration that produced it; allowing N > 1 would make it
     ambiguous which pass the payload came from.
     """
-    payload = _assistant(
-        [{"type": "text", "text": "<result>{\"answer\": 1}</result>"}]
-    )
+    payload = _assistant([{"type": "text", "text": '<result>{"answer": 1}</result>'}])
     agent = FakeAgent([payload])
     sandbox = FakeSandbox([payload])
     with pytest.raises(ValueError) as exc:
@@ -221,9 +217,7 @@ async def test_output_with_missing_opening_tag_in_prompt_rejected_up_front() -> 
     not the raw template — what matters is whether the agent will actually
     see the tag instruction.
     """
-    payload = _assistant(
-        [{"type": "text", "text": "<result>{\"answer\": 1}</result>"}]
-    )
+    payload = _assistant([{"type": "text", "text": '<result>{"answer": 1}</result>'}])
     agent = FakeAgent([payload])
     sandbox = FakeSandbox([payload])
     with pytest.raises(ValueError) as exc:
@@ -246,9 +240,7 @@ async def test_output_guard_passes_when_prompt_contains_opening_tag() -> None:
     asserting the open tag appears is enough — we don't require well-formed
     XML in the prompt, just evidence the caller asked the agent to emit it.
     """
-    payload = _assistant(
-        [{"type": "text", "text": "<result>{\"answer\": 5}</result>"}]
-    )
+    payload = _assistant([{"type": "text", "text": '<result>{"answer": 5}</result>'}])
     result = await run(
         agent=FakeAgent([payload]),
         sandbox=FakeSandbox([payload]),
@@ -269,9 +261,7 @@ async def test_invalid_json_in_tag_raises_structured_output_error() -> None:
     """When the agent emits non-JSON inside the tag, `run()` propagates the
     `StructuredOutputError` from the extractor unchanged.
     """
-    payload = _assistant(
-        [{"type": "text", "text": "<result>not valid json</result>"}]
-    )
+    payload = _assistant([{"type": "text", "text": "<result>not valid json</result>"}])
     with pytest.raises(StructuredOutputError) as exc:
         await run(
             agent=FakeAgent([payload]),

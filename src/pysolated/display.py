@@ -32,9 +32,7 @@ class TerminalDisplay:
     with `[<name>]` so concurrent runs in adjacent terminals stay distinguishable.
     """
 
-    def __init__(
-        self, console: Console | None = None, name: str | None = None
-    ) -> None:
+    def __init__(self, console: Console | None = None, name: str | None = None) -> None:
         self._console = console or Console()
         self._name = name
 

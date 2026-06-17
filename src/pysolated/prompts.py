@@ -125,9 +125,7 @@ def substitute_arguments(
     return result
 
 
-async def expand_shell_expressions(
-    template: str, *, executor: PromptExecutor
-) -> str:
+async def expand_shell_expressions(template: str, *, executor: PromptExecutor) -> str:
     """Replace each `` !`command` `` in `template` with the command's stdout.
 
     `executor` runs the command and returns an `ExecResult`. A non-zero exit
@@ -141,7 +139,7 @@ async def expand_shell_expressions(
     pieces: list[str] = []
     cursor = 0
     for match in _SHELL_EXPR_RE.finditer(template):
-        pieces.append(template[cursor:match.start()])
+        pieces.append(template[cursor : match.start()])
         command = match.group(1)
         result = await executor(command)
         if result.exit_code != 0:

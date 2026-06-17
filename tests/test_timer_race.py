@@ -85,7 +85,9 @@ class TimedSandbox:
         if self._hang:
             await asyncio.Event().wait()  # cancelled by the orchestrator
         return ExecResult(
-            exit_code=0, stdout="\n".join(line for _, line in self._timed_lines), stderr=""
+            exit_code=0,
+            stdout="\n".join(line for _, line in self._timed_lines),
+            stderr="",
         )
 
 
