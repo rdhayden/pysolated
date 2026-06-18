@@ -209,6 +209,12 @@ class SandboxProvider(Protocol):
 class RunResult(BaseModel):
     """The frozen result of a `run()` — what the agent said and where it ran.
 
+    `text` is the agent's own decoded prose across all iterations (the
+    concatenated `TextEvent` payloads) — the agent's words, with no stream-json
+    wrapper. `stdout` is the raw combined `stream-json` for the same run, kept
+    for inspection/debugging; prefer `text` when you just want what the agent
+    said.
+
     `output` carries the structured-output payload extracted after the run when
     the caller passed `output=Output.object(...)` / `Output.string(...)` to
     `run()`; `None` for runs without an `output` argument.
@@ -221,6 +227,7 @@ class RunResult(BaseModel):
 
     iterations: int
     stdout: str
+    text: str = ""
     branch: str
     usage: Usage | None = None
     completion_signal: str | None = None

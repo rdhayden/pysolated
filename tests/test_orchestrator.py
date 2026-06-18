@@ -149,6 +149,9 @@ async def test_returns_frozen_run_result() -> None:
     assert result.branch == "feature/x"
     assert result.usage == Usage(**USAGE)
     assert "Hi!" in result.stdout
+    # `text` is the agent's decoded prose only — no stream-json wrapper.
+    assert result.text == "Hi!"
+    assert "{" not in result.text
     with pytest.raises(Exception):
         result.iterations = 2  # type: ignore[misc]  # frozen
 

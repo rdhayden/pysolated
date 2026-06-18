@@ -267,6 +267,7 @@ async def run(
         return RunResult(
             iterations=iterations_done,
             stdout=stdout,
+            text=prose,
             branch=branch,
             usage=usage,
             completion_signal=matched_signal,
