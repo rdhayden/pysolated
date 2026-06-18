@@ -420,6 +420,41 @@ uv run pysolated run \
 On completion the CLI prints the iteration count, the matched completion signal,
 the commits the agent made, and token usage.
 
+### Podman image lifecycle
+
+The `pysolated podman` subgroup manages the image the `podman(...)` sandbox
+runs. Both subcommands default to the same derived tag the provider uses —
+`pysolated:<sanitized-host-dirname>` — so a fresh repo goes from zero to a
+running agent without leaving pysolated.
+
+```bash
+# build ./Containerfile to the derived tag
+uv run pysolated podman build-image
+
+# build a different Containerfile to an explicit tag
+uv run pysolated podman build-image --file docker/Containerfile --image my-agent:latest
+
+# remove the derived (or a named) image
+uv run pysolated podman remove-image
+uv run pysolated podman remove-image --image my-agent:latest
+```
+
+**`pysolated podman build-image`** — runs `podman build -f <file> -t <tag> <cwd>`:
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--file` / `-f` | `Containerfile` | Containerfile path passed to `podman build -f`. |
+| `--image` | `pysolated:<sanitized-host-dirname>` | Image tag to build. |
+
+**`pysolated podman remove-image`** — the matching `podman rmi`:
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--image` | `pysolated:<sanitized-host-dirname>` | Image tag to remove. |
+
+Both exit non-zero (propagating Podman's exit code) and echo Podman's stderr
+when the underlying command fails.
+
 ## Architecture
 
 Three injectable `Protocol` seams (per
