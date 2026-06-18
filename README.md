@@ -130,10 +130,42 @@ Knobs on `podman(...)`:
 | `userns` | `"keep-id"` | `--userns=keep-id:uid=N,gid=N` + paired `--user N:N`. Pass `None` for raw Podman defaults. |
 | `container_uid` / `container_gid` | `1000` / `1000` | uid:gid for `--user` and keep-id. |
 | `selinux_label` | `"z"` | Mount label (`z` shared, `Z` private). Pass `None` for no label. |
+| `mounts` | `[]` | Extra `Mount`s appended after the repo bind mount. See below. |
+| `cpus` | `None` | `--cpus N` (fractional ok, e.g. `1.5`). Omitted when `None`. |
 
-Mounts beyond the repo bind mount, CPU/memory limits, and `pysolated podman
-build-image` are tracked in [`docs/futures/features.md`](docs/futures/features.md)
-and the committed roadmap there.
+**Custom mounts.** Each `Mount(host_path, sandbox_path, readonly=False)` is
+appended as a `-v host:sandbox[:opts]` entry on `podman run`. `host_path` is
+tilde-expanded against the host `$HOME` and, if relative, resolved against
+the host cwd; the resolved path **must exist** at `create()` time or the
+provider fails fast with `Mount host_path does not exist`. `sandbox_path`
+must be **absolute** — there is no sandbox-side `~` expansion. The `ro` and
+SELinux-label options are composed through the same formatter as the repo
+mount, so `Mount(..., readonly=True)` with `selinux_label="z"` renders as
+`…:ro,z`.
+
+> Caveat: the sandbox-side **parent directory must already exist in the
+> image**. Mounting a single file whose parent dir is absent will fail —
+> auto-creating parent dirs for file mounts is tracked in
+> [`docs/futures/features.md`](docs/futures/features.md).
+
+```python
+from pysolated import podman, Mount
+
+sandbox = podman(
+    image="pysolated-agent:latest",
+    env={"ANTHROPIC_API_KEY": "sk-..."},
+    mounts=[
+        Mount(host_path="~/.config/gh", sandbox_path="/home/agent/.config/gh"),
+        Mount(host_path="./data", sandbox_path="/data", readonly=True),
+    ],
+    cpus=1.5,
+)
+```
+
+`pysolated podman build-image`, memory limits, and the other `podman run`
+knobs (`--network`, `--group-add`, `--device`) are tracked in
+[`docs/futures/features.md`](docs/futures/features.md) and the committed
+roadmap there.
 
 ### Prompt templates
 

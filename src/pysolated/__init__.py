@@ -45,6 +45,7 @@ from .prompts import (
     substitute_arguments,
 )
 from .sandboxes import (
+    Mount,
     NoSandbox,
     NoSandboxHandle,
     Podman,
@@ -75,6 +76,7 @@ __all__ = [
     "podman",
     "Podman",
     "PodmanHandle",
+    "Mount",
     "PermissionMode",
     # Display
     "TerminalDisplay",

@@ -195,6 +195,26 @@ UserNamespace = Literal["keep-id"] | None
 SELinuxLabel = Literal["z", "Z"] | None
 
 
+@dataclass(frozen=True)
+class Mount:
+    """A user-supplied bind mount for the Podman provider.
+
+    `host_path` is tilde-expanded against the host `$HOME` and, if relative,
+    resolved against the host cwd at `create()` time; the resolved path must
+    exist or `create()` fails fast. `sandbox_path` must be absolute — tilde
+    expansion on the sandbox side would require knowing the in-container HOME
+    and is deferred (see `docs/futures/features.md`). The sandbox-side parent
+    directory must already exist in the image.
+
+    `readonly=True` adds the `ro` option to the `-v` value; the provider's
+    SELinux label is composed in alongside it (e.g. `…:ro,z`).
+    """
+
+    host_path: str
+    sandbox_path: str
+    readonly: bool = False
+
+
 @dataclass
 class PodmanHandle:
     """The live Podman handle wrapping a long-lived rootless container.
@@ -288,6 +308,8 @@ class Podman:
     container_uid: int = 1000
     container_gid: int = 1000
     selinux_label: SELinuxLabel = "z"
+    mounts: list[Mount] = field(default_factory=list)
+    cpus: float | None = None
 
     async def create(self, work_dir: str) -> PodmanHandle:
         """Preflight the image and start a detached `sleep infinity` container.
@@ -301,6 +323,8 @@ class Podman:
         (ADR 0004); the orchestrator's `cwd=` then passes straight through
         `podman exec -w` unchanged.
         """
+        resolved_mounts = [_resolve_mount(m) for m in self.mounts]
+
         inspect = await _stream_subprocess(["podman", "image", "inspect", self.image])
         if inspect.exit_code != 0:
             raise PodmanImageNotFoundError(
@@ -311,7 +335,9 @@ class Podman:
 
         container_name = f"pysolated-{uuid.uuid4().hex[:12]}"
         run_argv = self._build_run_argv(
-            container_name=container_name, work_dir=work_dir
+            container_name=container_name,
+            work_dir=work_dir,
+            resolved_mounts=resolved_mounts,
         )
         result = await _stream_subprocess(run_argv)
         if result.exit_code != 0:
@@ -321,7 +347,13 @@ class Podman:
             )
         return PodmanHandle(container_name=container_name)
 
-    def _build_run_argv(self, *, container_name: str, work_dir: str) -> list[str]:
+    def _build_run_argv(
+        self,
+        *,
+        container_name: str,
+        work_dir: str,
+        resolved_mounts: list[Mount],
+    ) -> list[str]:
         """Construct the `podman run` argv. Pure — unit-tested directly."""
         argv: list[str] = ["podman", "run", "-d", "--name", container_name]
 
@@ -334,7 +366,23 @@ class Podman:
                 ]
             )
 
+        if self.cpus is not None:
+            argv.extend(["--cpus", str(self.cpus)])
+
         argv.extend(["-v", _build_volume_spec(work_dir, work_dir, self.selinux_label)])
+
+        for mount in resolved_mounts:
+            argv.extend(
+                [
+                    "-v",
+                    _build_volume_spec(
+                        mount.host_path,
+                        mount.sandbox_path,
+                        self.selinux_label,
+                        readonly=mount.readonly,
+                    ),
+                ]
+            )
 
         # Provider env wins over the HOME default: dict|merge with provider
         # entries last means a user-supplied HOME overrides /home/agent.
@@ -344,6 +392,31 @@ class Podman:
 
         argv.extend(["--entrypoint", "sleep", self.image, "infinity"])
         return argv
+
+
+def _resolve_mount(mount: Mount) -> Mount:
+    """Validate and resolve a `Mount` against the host filesystem.
+
+    Tilde-expands `host_path` against `$HOME`, resolves relative paths against
+    the host cwd, and raises `FileNotFoundError` if the resolved path is
+    missing. `sandbox_path` must be absolute — relative or `~`-prefixed
+    sandbox paths are rejected here because they would silently land somewhere
+    surprising inside the container.
+    """
+    if not os.path.isabs(mount.sandbox_path):
+        raise ValueError(
+            f"Mount sandbox_path must be absolute (got {mount.sandbox_path!r})"
+        )
+    host_path = os.path.abspath(os.path.expanduser(mount.host_path))
+    if not os.path.exists(host_path):
+        raise FileNotFoundError(
+            f"Mount host_path does not exist: {host_path!r} (from {mount.host_path!r})"
+        )
+    return Mount(
+        host_path=host_path,
+        sandbox_path=mount.sandbox_path,
+        readonly=mount.readonly,
+    )
 
 
 def _build_volume_spec(
@@ -378,6 +451,8 @@ def podman(
     container_uid: int = 1000,
     container_gid: int = 1000,
     selinux_label: SELinuxLabel = "z",
+    mounts: list[Mount] | None = None,
+    cpus: float | None = None,
 ) -> Podman:
     """Create a Podman sandbox provider.
 
@@ -385,8 +460,12 @@ def podman(
     `PATH`, writable `HOME`) is documented on `Podman`. `env` is injected at
     `podman run` time and wins over the `HOME=/home/agent` default. The
     container is not given the host's `os.environ`: pass credentials
-    explicitly via `env=` or by mounting a file (custom mounts ship in a
-    later slice).
+    explicitly via `env=` or by mounting a file.
+
+    `mounts` add user bind mounts on top of the same-path repo mount; each is
+    composed through the same volume-spec builder as the repo mount, so the
+    SELinux label and `ro` flag are formatted identically. `cpus` (fractional
+    ok) becomes `--cpus N`; omitted when `None`.
     """
     return Podman(
         image=image,
@@ -395,4 +474,6 @@ def podman(
         container_uid=container_uid,
         container_gid=container_gid,
         selinux_label=selinux_label,
+        mounts=list(mounts) if mounts is not None else [],
+        cpus=cpus,
     )

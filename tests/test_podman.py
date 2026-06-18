@@ -18,6 +18,7 @@ import pytest
 
 from pysolated import (
     ExecResult,
+    Mount,
     PodmanImageNotFoundError,
     PodmanLaunchError,
     podman,
@@ -449,3 +450,166 @@ def test_podman_defaults() -> None:
     assert provider.selinux_label == "z"
     assert provider.name == "podman"
     assert provider.env == {}
+    assert provider.mounts == []
+    assert provider.cpus is None
+
+
+# ---------------------------------------------------------------------------
+# Custom mounts (issue #21) — argv composition + validation.
+# ---------------------------------------------------------------------------
+
+
+async def test_mounts_append_v_args_with_label(tmp_path: Any) -> None:
+    """User mounts emit `-v host:sandbox:z` after the repo mount."""
+    host = tmp_path / "creds"
+    host.mkdir()
+    stub = _CLIStub()
+    provider = podman(
+        image="agent:latest",
+        mounts=[Mount(host_path=str(host), sandbox_path="/secrets")],
+    )
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    argv = stub.calls[1]["argv"]
+    v_args = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert v_args[0] == "/home/u/repo:/home/u/repo:z"
+    assert v_args[1] == f"{host}:/secrets:z"
+
+
+async def test_mount_readonly_composes_ro_and_label(tmp_path: Any) -> None:
+    """`readonly=True` composes `:ro,z` via the shared volume-spec builder."""
+    host = tmp_path / "data"
+    host.mkdir()
+    stub = _CLIStub()
+    provider = podman(
+        image="agent:latest",
+        mounts=[
+            Mount(host_path=str(host), sandbox_path="/data", readonly=True),
+        ],
+    )
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    argv = stub.calls[1]["argv"]
+    v_args = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert v_args[1] == f"{host}:/data:ro,z"
+
+
+async def test_mount_readonly_no_selinux_label(tmp_path: Any) -> None:
+    """`selinux_label=None` + readonly produces `:ro` without a label suffix."""
+    host = tmp_path / "data"
+    host.mkdir()
+    stub = _CLIStub()
+    provider = podman(
+        image="agent:latest",
+        selinux_label=None,
+        mounts=[Mount(host_path=str(host), sandbox_path="/data", readonly=True)],
+    )
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    argv = stub.calls[1]["argv"]
+    v_args = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert v_args[1] == f"{host}:/data:ro"
+
+
+async def test_mount_tilde_expands_against_host_home(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`~/foo` in `host_path` expands against the host `$HOME`."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / "creds").mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    stub = _CLIStub()
+    provider = podman(
+        image="agent:latest",
+        mounts=[Mount(host_path="~/creds", sandbox_path="/secrets")],
+    )
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    argv = stub.calls[1]["argv"]
+    v_args = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert v_args[1].startswith(f"{fake_home}/creds:/secrets:")
+
+
+async def test_mount_relative_host_path_resolved_against_cwd(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relative `host_path` resolves against host cwd at create() time."""
+    (tmp_path / "data").mkdir()
+    monkeypatch.chdir(tmp_path)
+    stub = _CLIStub()
+    provider = podman(
+        image="agent:latest",
+        mounts=[Mount(host_path="data", sandbox_path="/data")],
+    )
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    argv = stub.calls[1]["argv"]
+    v_args = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert v_args[1].startswith(f"{tmp_path}/data:/data:")
+
+
+async def test_mount_missing_host_path_raises_before_run(tmp_path: Any) -> None:
+    """Missing `host_path` fails fast with a clear message and no `podman run`."""
+    stub = _CLIStub()
+    provider = podman(
+        image="agent:latest",
+        mounts=[
+            Mount(host_path=str(tmp_path / "missing"), sandbox_path="/data"),
+        ],
+    )
+    async with _patched(stub):
+        with pytest.raises(FileNotFoundError) as exc:
+            await provider.create(work_dir="/home/u/repo")
+    assert "does not exist" in str(exc.value)
+    # Failed before `podman image inspect` or `podman run` ran.
+    assert stub.calls == []
+
+
+async def test_mount_relative_sandbox_path_rejected(tmp_path: Any) -> None:
+    """A relative `sandbox_path` is rejected — silent dir-of-cwd surprises."""
+    host = tmp_path / "data"
+    host.mkdir()
+    stub = _CLIStub()
+    provider = podman(
+        image="agent:latest",
+        mounts=[Mount(host_path=str(host), sandbox_path="relative/path")],
+    )
+    async with _patched(stub):
+        with pytest.raises(ValueError) as exc:
+            await provider.create(work_dir="/home/u/repo")
+    assert "absolute" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# `cpus` (issue #21) — `--cpus` argv emission.
+# ---------------------------------------------------------------------------
+
+
+async def test_cpus_emits_flag_when_set() -> None:
+    stub = _CLIStub()
+    provider = podman(image="agent:latest", cpus=1.5)
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    argv = stub.calls[1]["argv"]
+    i = argv.index("--cpus")
+    assert argv[i + 1] == "1.5"
+
+
+async def test_cpus_omitted_when_none() -> None:
+    stub = _CLIStub()
+    provider = podman(image="agent:latest")
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    argv = stub.calls[1]["argv"]
+    assert "--cpus" not in argv
+
+
+async def test_cpus_integer_value_renders() -> None:
+    stub = _CLIStub()
+    provider = podman(image="agent:latest", cpus=2)
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    argv = stub.calls[1]["argv"]
+    i = argv.index("--cpus")
+    assert argv[i + 1] == "2"
