@@ -119,13 +119,13 @@ The **image contract** the provider relies on:
 
 A missing image is caught up front: `create()` runs `podman image inspect
 <image>` as a preflight and raises `PodmanImageNotFoundError` with a clear
-message if the image isn't there yet (build or `podman pull` it before re-running).
+message naming `pysolated podman build-image` so the fix is one command away.
 
 Knobs on `podman(...)`:
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `image` | _(required)_ | The image to run. |
+| `image` | `pysolated:<sanitized-host-dirname>` | The image to run. Same name `pysolated podman build-image` produces, so `podman()` and the CLI line up out of the box. |
 | `env` | `{}` | `-e` pairs at `podman run`. Provider env wins over the `HOME=/home/agent` default. |
 | `userns` | `"keep-id"` | `--userns=keep-id:uid=N,gid=N` + paired `--user N:N`. Pass `None` for raw Podman defaults. |
 | `container_uid` / `container_gid` | `1000` / `1000` | uid:gid for `--user` and keep-id. |
@@ -162,8 +162,13 @@ sandbox = podman(
 )
 ```
 
-`pysolated podman build-image`, memory limits, and the other `podman run`
-knobs (`--network`, `--group-add`, `--device`) are tracked in
+**Image lifecycle.** `pysolated podman build-image` runs `podman build -f
+Containerfile -t pysolated:<sanitized-host-dirname> .` against the host cwd;
+`--file <path>` overrides the Containerfile and `--image <tag>` overrides the
+derived tag. `pysolated podman remove-image` is the matching `podman rmi`.
+
+Memory limits and the other `podman run` knobs (`--network`, `--group-add`,
+`--device`) are tracked in
 [`docs/futures/features.md`](docs/futures/features.md) and the committed
 roadmap there.
 

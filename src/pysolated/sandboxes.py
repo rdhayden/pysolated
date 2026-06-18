@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -179,6 +180,21 @@ def no_sandbox(*, env: dict[str, str] | None = None) -> NoSandbox:
 # ---------------------------------------------------------------------------
 
 
+_IMAGE_NAME_FALLBACK = "local"
+
+
+def _derive_default_image_name(cwd: str | None = None) -> str:
+    """Derive `pysolated:<sanitized-dirname>` from `cwd` (or `os.getcwd()`).
+
+    The last path segment is lowercased and sanitized to `[a-z0-9_.-]` (other
+    runs collapse to a single `-`, trimmed from the ends). An empty result —
+    e.g. running from `/` — falls back to `pysolated:local`.
+    """
+    base = os.path.basename(os.path.abspath(cwd if cwd is not None else os.getcwd()))
+    sanitized = re.sub(r"[^a-z0-9_.-]+", "-", base.lower()).strip("-")
+    return f"pysolated:{sanitized or _IMAGE_NAME_FALLBACK}"
+
+
 class PodmanImageNotFoundError(RuntimeError):
     """Raised at `create()` when `podman image inspect <image>` fails.
 
@@ -329,8 +345,8 @@ class Podman:
         if inspect.exit_code != 0:
             raise PodmanImageNotFoundError(
                 f"Podman image not found: {self.image!r}. "
-                f"Build or pull it before running "
-                f"(e.g. `podman pull {self.image}` or build from a Containerfile)."
+                f"Build it with `pysolated podman build-image` "
+                f"(or `podman pull {self.image}` if you have a remote tag)."
             )
 
         container_name = f"pysolated-{uuid.uuid4().hex[:12]}"
@@ -443,9 +459,32 @@ def _build_volume_spec(
     return spec
 
 
+async def build_image(
+    image: str,
+    *,
+    containerfile: str = "Containerfile",
+    context: str | None = None,
+) -> ExecResult:
+    """Run `podman build -f <containerfile> -t <image> <context>`.
+
+    `context` defaults to the host cwd at call time — the same directory whose
+    name `_derive_default_image_name()` would sanitize, so a no-arg
+    `pysolated podman build-image` from a repo root is fully self-describing.
+    """
+    ctx = context if context is not None else os.getcwd()
+    return await _stream_subprocess(
+        ["podman", "build", "-f", containerfile, "-t", image, ctx]
+    )
+
+
+async def remove_image(image: str) -> ExecResult:
+    """Run `podman rmi <image>`."""
+    return await _stream_subprocess(["podman", "rmi", image])
+
+
 def podman(
     *,
-    image: str,
+    image: str | None = None,
     env: dict[str, str] | None = None,
     userns: UserNamespace = "keep-id",
     container_uid: int = 1000,
@@ -456,11 +495,13 @@ def podman(
 ) -> Podman:
     """Create a Podman sandbox provider.
 
-    `image` is required — its contract (user at uid/gid, `git` + agent CLI on
-    `PATH`, writable `HOME`) is documented on `Podman`. `env` is injected at
-    `podman run` time and wins over the `HOME=/home/agent` default. The
-    container is not given the host's `os.environ`: pass credentials
-    explicitly via `env=` or by mounting a file.
+    `image` defaults to `pysolated:<sanitized-host-dirname>` (see
+    `_derive_default_image_name`) so callers can rely on the same name the
+    `pysolated podman build-image` CLI produces. Its contract (user at
+    uid/gid, `git` + agent CLI on `PATH`, writable `HOME`) is documented on
+    `Podman`. `env` is injected at `podman run` time and wins over the
+    `HOME=/home/agent` default. The container is not given the host's
+    `os.environ`: pass credentials explicitly via `env=` or by mounting a file.
 
     `mounts` add user bind mounts on top of the same-path repo mount; each is
     composed through the same volume-spec builder as the repo mount, so the
@@ -468,7 +509,7 @@ def podman(
     ok) becomes `--cpus N`; omitted when `None`.
     """
     return Podman(
-        image=image,
+        image=image if image is not None else _derive_default_image_name(),
         env=env or {},
         userns=userns,
         container_uid=container_uid,

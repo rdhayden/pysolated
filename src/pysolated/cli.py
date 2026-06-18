@@ -21,9 +21,19 @@ from .orchestrator import (
     run as run_engine,
 )
 from .prompts import PromptError
-from .sandboxes import no_sandbox
+from .sandboxes import (
+    _derive_default_image_name,
+    build_image as build_image_helper,
+    no_sandbox,
+    remove_image as remove_image_helper,
+)
 
 app = typer.Typer(add_completion=False, help="Orchestrate Claude Code via run().")
+podman_app = typer.Typer(
+    add_completion=False,
+    help="Podman image lifecycle helpers (build / remove the agent image).",
+)
+app.add_typer(podman_app, name="podman")
 
 DEFAULT_MODEL = "claude-opus-4-7"
 
@@ -180,6 +190,51 @@ def run_command(
         )
     else:
         typer.echo("Token usage: unavailable")
+
+
+@podman_app.command("build-image")
+def podman_build_image_command(
+    file: str = typer.Option(
+        "Containerfile",
+        "--file",
+        "-f",
+        help="Containerfile path passed to `podman build -f`.",
+    ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        help="Image tag to build. Defaults to `pysolated:<sanitized-dirname>`.",
+    ),
+) -> None:
+    """Build the Podman image used by `podman(...)`."""
+    tag = image if image is not None else _derive_default_image_name()
+    result = asyncio.run(build_image_helper(tag, containerfile=file))
+    if result.exit_code != 0:
+        typer.echo(
+            result.stderr.strip() or f"podman build failed ({result.exit_code})",
+            err=True,
+        )
+        raise typer.Exit(code=result.exit_code)
+    typer.echo(f"Built {tag} from {file}")
+
+
+@podman_app.command("remove-image")
+def podman_remove_image_command(
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        help="Image tag to remove. Defaults to `pysolated:<sanitized-dirname>`.",
+    ),
+) -> None:
+    """Remove the Podman image (`podman rmi`)."""
+    tag = image if image is not None else _derive_default_image_name()
+    result = asyncio.run(remove_image_helper(tag))
+    if result.exit_code != 0:
+        typer.echo(
+            result.stderr.strip() or f"podman rmi failed ({result.exit_code})", err=True
+        )
+        raise typer.Exit(code=result.exit_code)
+    typer.echo(f"Removed {tag}")
 
 
 def _parse_prompt_args(items: list[str]) -> dict[str, str]:

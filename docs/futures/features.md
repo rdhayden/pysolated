@@ -26,8 +26,8 @@ name. Everything below is a sandbox provider beyond no-sandbox.
   (`:z`, `:ro,z`), `mounts`, `cpus`. **Minimal provider shipped (issue #20):
   factory+handle on the new seam, `keep-id` + same-path `:z` repo mount, argv
   passthrough through `podman exec`, `podman rm -f` teardown + `atexit`
-  backstop.** Still ahead inside the Podman track: `mounts` + `cpus` (#21),
-  `build-image` / `remove-image` + derived default image name (#22). Deferred
+  backstop. `mounts` + `cpus` shipped (#21). `pysolated podman build-image`
+  / `remove-image` + derived default image name shipped (#22).** Deferred
   *out of* the provider slice itself:
   - **File-mount parent creation** — Sandcastle's `processFileMountParents`: a root
     `mkdir -p && chown` exec after `podman run` so mounting a single file whose

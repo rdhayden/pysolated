@@ -23,7 +23,14 @@ from pysolated import (
     PodmanLaunchError,
     podman,
 )
-from pysolated.sandboxes import Podman, PodmanHandle, _build_volume_spec
+from pysolated.sandboxes import (
+    Podman,
+    PodmanHandle,
+    _build_volume_spec,
+    _derive_default_image_name,
+    build_image,
+    remove_image,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +115,8 @@ async def test_create_raises_on_missing_image() -> None:
     msg = str(exc.value)
     assert "nope:latest" in msg
     assert "not found" in msg.lower()
+    # The fix is one CLI command away — name it in the message (issue #22).
+    assert "pysolated podman build-image" in msg
     # `podman run` must not have been attempted after the preflight failed.
     assert len(stub.calls) == 1
 
@@ -613,3 +622,105 @@ async def test_cpus_integer_value_renders() -> None:
     argv = stub.calls[1]["argv"]
     i = argv.index("--cpus")
     assert argv[i + 1] == "2"
+
+
+# ---------------------------------------------------------------------------
+# Default image name derivation (issue #22).
+# ---------------------------------------------------------------------------
+
+
+def test_derive_default_image_name_basic_dirname() -> None:
+    """Lowercased dirname becomes the tag: `pysolated:<name>`."""
+    assert _derive_default_image_name("/home/u/myrepo") == "pysolated:myrepo"
+
+
+def test_derive_default_image_name_lowercases_and_sanitizes() -> None:
+    """Uppercase folds to lower; chars outside `[a-z0-9_.-]` collapse to `-`."""
+    assert _derive_default_image_name("/home/u/My Project!") == "pysolated:my-project"
+
+
+def test_derive_default_image_name_keeps_allowed_punctuation() -> None:
+    """`.`, `_`, `-` survive sanitization unchanged."""
+    assert _derive_default_image_name("/p/foo.bar_baz-1") == "pysolated:foo.bar_baz-1"
+
+
+def test_derive_default_image_name_fallback_when_empty() -> None:
+    """Running from `/` (basename empty) falls back to `pysolated:local`."""
+    assert _derive_default_image_name("/") == "pysolated:local"
+
+
+def test_derive_default_image_name_fallback_when_all_disallowed() -> None:
+    """A dirname of only disallowed chars sanitizes to empty → `local`."""
+    assert _derive_default_image_name("/!!!@@@") == "pysolated:local"
+
+
+def test_derive_default_image_name_uses_cwd_when_none(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No-arg form derives from the host cwd at call time."""
+    project = tmp_path / "WidgetCo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    assert _derive_default_image_name() == "pysolated:widgetco"
+
+
+def test_podman_image_defaults_to_derived_when_omitted(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`podman()` with no `image=` derives `pysolated:<cwd-dirname>`."""
+    project = tmp_path / "demo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    provider = podman()
+    assert provider.image == "pysolated:demo"
+
+
+def test_podman_explicit_image_still_wins() -> None:
+    """An explicit `image=` is used verbatim — derivation only fills the gap."""
+    provider = podman(image="custom:tag")
+    assert provider.image == "custom:tag"
+
+
+# ---------------------------------------------------------------------------
+# Image lifecycle helpers (issue #22) — `build_image` / `remove_image` argv.
+# ---------------------------------------------------------------------------
+
+
+async def test_build_image_uses_default_containerfile(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`build_image(tag)` defaults to `-f Containerfile` and the cwd as context."""
+    monkeypatch.chdir(tmp_path)
+    stub = _CLIStub()
+    async with _patched(stub):
+        await build_image("pysolated:demo")
+    assert stub.calls[0]["argv"] == [
+        "podman",
+        "build",
+        "-f",
+        "Containerfile",
+        "-t",
+        "pysolated:demo",
+        str(tmp_path),
+    ]
+
+
+async def test_build_image_respects_custom_file(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--file` (here passed as `containerfile=`) overrides the default path."""
+    monkeypatch.chdir(tmp_path)
+    stub = _CLIStub()
+    async with _patched(stub):
+        await build_image("pysolated:demo", containerfile="docker/Dev.Containerfile")
+    argv = stub.calls[0]["argv"]
+    i = argv.index("-f")
+    assert argv[i + 1] == "docker/Dev.Containerfile"
+
+
+async def test_remove_image_runs_rmi() -> None:
+    """`remove_image(tag)` runs `podman rmi <tag>` verbatim."""
+    stub = _CLIStub()
+    async with _patched(stub):
+        await remove_image("pysolated:demo")
+    assert stub.calls[0]["argv"] == ["podman", "rmi", "pysolated:demo"]
