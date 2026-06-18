@@ -10,13 +10,21 @@ from __future__ import annotations
 import asyncio
 import os
 import signal as os_signal
+import sys
 from pathlib import Path
 from typing import Any
 
+import pysolated.sandboxes.podman  # noqa: F401  (ensure submodule in sys.modules)
 from typer.testing import CliRunner
 
 from pysolated import RunResult
 from pysolated import cli as cli_module
+
+# `pysolated.sandboxes.podman` (attribute) resolves to the re-exported factory
+# function; the submodule of the same name is shadowed in the package
+# namespace. Reach the submodule via `sys.modules` so monkey-patching hits
+# the binding the CLI's `build_image`/`remove_image` helpers actually use.
+_podman_module = sys.modules["pysolated.sandboxes.podman"]
 
 
 def _fake_engine_capturing_kwargs(captured: dict) -> Any:
@@ -173,7 +181,7 @@ def test_cli_podman_build_image_default_containerfile(
     project.mkdir()
     monkeypatch.chdir(project)
     calls, fake = _fake_subprocess_recorder()
-    monkeypatch.setattr("pysolated.sandboxes._stream_subprocess", fake)
+    monkeypatch.setattr(_podman_module, "_stream_subprocess", fake)
 
     runner = CliRunner()
     result = runner.invoke(cli_module.app, ["podman", "build-image"])
@@ -199,7 +207,7 @@ def test_cli_podman_build_image_custom_file_flag(
     project.mkdir()
     monkeypatch.chdir(project)
     calls, fake = _fake_subprocess_recorder()
-    monkeypatch.setattr("pysolated.sandboxes._stream_subprocess", fake)
+    monkeypatch.setattr(_podman_module, "_stream_subprocess", fake)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -216,7 +224,7 @@ def test_cli_podman_build_image_explicit_tag(tmp_path: Path, monkeypatch: Any) -
     """An explicit `--image` skips derivation."""
     monkeypatch.chdir(tmp_path)
     calls, fake = _fake_subprocess_recorder()
-    monkeypatch.setattr("pysolated.sandboxes._stream_subprocess", fake)
+    monkeypatch.setattr(_podman_module, "_stream_subprocess", fake)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -235,7 +243,7 @@ def test_cli_podman_remove_image_default_tag(tmp_path: Path, monkeypatch: Any) -
     project.mkdir()
     monkeypatch.chdir(project)
     calls, fake = _fake_subprocess_recorder()
-    monkeypatch.setattr("pysolated.sandboxes._stream_subprocess", fake)
+    monkeypatch.setattr(_podman_module, "_stream_subprocess", fake)
 
     runner = CliRunner()
     result = runner.invoke(cli_module.app, ["podman", "remove-image"])
@@ -246,7 +254,7 @@ def test_cli_podman_remove_image_default_tag(tmp_path: Path, monkeypatch: Any) -
 def test_cli_podman_remove_image_explicit_tag(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.chdir(tmp_path)
     calls, fake = _fake_subprocess_recorder()
-    monkeypatch.setattr("pysolated.sandboxes._stream_subprocess", fake)
+    monkeypatch.setattr(_podman_module, "_stream_subprocess", fake)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -268,7 +276,7 @@ def test_cli_podman_build_image_nonzero_exit_propagates(
     async def failing(argv: list[str], **kwargs: Any) -> ExecResult:
         return ExecResult(exit_code=2, stdout="", stderr="syntax error")
 
-    monkeypatch.setattr("pysolated.sandboxes._stream_subprocess", failing)
+    monkeypatch.setattr(_podman_module, "_stream_subprocess", failing)
     runner = CliRunner()
     result = runner.invoke(cli_module.app, ["podman", "build-image"])
     assert result.exit_code == 2, result.output

@@ -22,11 +22,11 @@ from .orchestrator import (
 )
 from .prompts import PromptError
 from .sandboxes import (
-    _derive_default_image_name,
     build_image as build_image_helper,
     no_sandbox,
     remove_image as remove_image_helper,
 )
+from .sandboxes._images import _derive_default_image_name
 
 app = typer.Typer(add_completion=False, help="Orchestrate Claude Code via run().")
 podman_app = typer.Typer(

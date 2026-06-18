@@ -1,198 +1,27 @@
-"""Sandbox providers.
+"""The Podman sandbox provider — a long-lived rootless container.
 
-v1 ships two providers under the factory+handle seam (ADR 0003):
-
-- `no_sandbox` — no isolation; the agent runs directly on the host. `close()`
-  is a no-op.
-- `podman` — a long-lived rootless Podman container as the isolation boundary.
-  `create()` preflights the image, starts a detached `sleep infinity` container
-  with `--userns=keep-id` + same-path repo bind mount (ADR 0004), and `close()`
-  removes it. `exec()` is argv passthrough through `podman exec` — no `sh -c`
-  wrapper (ADR 0001).
+`create()` preflights the image, starts a detached `sleep infinity` container
+with `--userns=keep-id` + same-path repo bind mount (ADR 0004), and `close()`
+removes it. `exec()` is argv passthrough through `podman exec` — no `sh -c`
+wrapper (ADR 0001).
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import re
 import uuid
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
-from .core import ExecResult
-
-# Generous per-line limit for the subprocess stream reader. Claude's stream-json
-# `system/init` and large assistant messages can exceed asyncio's 64 KiB default
-# and would otherwise raise LimitOverrunError mid-stream.
-_STREAM_LIMIT = 16 * 1024 * 1024
+from ..core import ExecResult
+from ._images import _derive_default_image_name
+from ._mounts import Mount, SELinuxLabel, _build_volume_spec, _resolve_mount
+from ._streaming import _stream_subprocess
 
 # Best-effort timeout on `podman rm -f` from close(). Teardown must not block
 # the run's real outcome on a stuck podman client.
 _PODMAN_RM_TIMEOUT_SECONDS = 10.0
-
-
-async def _stream_subprocess(
-    argv: list[str],
-    *,
-    stdin: str | None = None,
-    cwd: str | None = None,
-    env: Mapping[str, str] | None = None,
-    on_line: Callable[[str], None] | None = None,
-) -> ExecResult:
-    """Spawn argv as a host subprocess, streaming stdout line-by-line.
-
-    Returns exit code + full stdout + full stderr. Kills the subprocess if the
-    awaiting task is cancelled — this is how `no_sandbox` honours abort and
-    how the Podman provider kills the host `podman exec` client mid-flight.
-
-    When `env` is `None`, the subprocess inherits the host environment; this is
-    what the Podman provider wants for its `podman` client invocations
-    (whatever auth the host shell already has). The no-sandbox handle passes
-    the merged `{os.environ, provider.env}` so provider env wins.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.PIPE
-        if stdin is not None
-        else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        env=dict(env) if env is not None else None,
-        limit=_STREAM_LIMIT,
-    )
-
-    stdout_lines: list[str] = []
-    stderr_chunks: list[str] = []
-
-    async def feed_stdin() -> None:
-        if stdin is None or proc.stdin is None:
-            return
-        proc.stdin.write(stdin.encode("utf-8"))
-        await proc.stdin.drain()
-        proc.stdin.close()
-
-    async def pump_stdout() -> None:
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            line = raw.decode("utf-8", "replace").rstrip("\r\n")
-            stdout_lines.append(line)
-            if on_line is not None:
-                on_line(line)
-
-    async def pump_stderr() -> None:
-        assert proc.stderr is not None
-        data = await proc.stderr.read()
-        if data:
-            stderr_chunks.append(data.decode("utf-8", "replace"))
-
-    try:
-        await asyncio.gather(feed_stdin(), pump_stdout(), pump_stderr())
-        exit_code = await proc.wait()
-    except asyncio.CancelledError:
-        proc.kill()
-        await proc.wait()
-        raise
-    finally:
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-
-    return ExecResult(
-        exit_code=exit_code,
-        stdout="\n".join(stdout_lines),
-        stderr="".join(stderr_chunks),
-    )
-
-
-# ---------------------------------------------------------------------------
-# No-sandbox provider.
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class NoSandboxHandle:
-    """The live no-sandbox handle: runs commands as host subprocesses.
-
-    Created by `NoSandbox.create()`. `close()` is a no-op — there is no
-    container or VM to tear down — but it exists so the orchestrator's
-    lifecycle code path is identical across providers.
-    """
-
-    env: dict[str, str] = field(default_factory=dict)
-    _closed: bool = False
-
-    async def exec(
-        self,
-        argv: list[str],
-        *,
-        stdin: str | None = None,
-        cwd: str | None = None,
-        on_line: Callable[[str], None] | None = None,
-    ) -> ExecResult:
-        """Spawn a host subprocess, streaming stdout line-by-line via `on_line`.
-
-        Returns exit code, full stdout, and full stderr. Kills the subprocess if
-        the awaiting task is cancelled.
-        """
-        return await _stream_subprocess(
-            argv,
-            stdin=stdin,
-            cwd=cwd,
-            env={**os.environ, **self.env},
-            on_line=on_line,
-        )
-
-    async def close(self) -> None:
-        """No-op: nothing to tear down on the host.
-
-        Idempotent — the orchestrator's `finally` and the `atexit` backstop
-        may both call this on the same handle.
-        """
-        self._closed = True
-
-
-@dataclass(frozen=True)
-class NoSandbox:
-    """The no-sandbox provider — runs the agent directly on the host.
-
-    Build via `no_sandbox()`. Frozen and reusable; each `create()` returns a
-    fresh handle, so the same provider can drive concurrent runs.
-    """
-
-    env: dict[str, str] = field(default_factory=dict)
-    name: str = "no-sandbox"
-
-    async def create(self, work_dir: str) -> NoSandboxHandle:
-        """Return a fresh handle. `work_dir` is unused — the host has no setup."""
-        return NoSandboxHandle(env=dict(self.env))
-
-
-def no_sandbox(*, env: dict[str, str] | None = None) -> NoSandbox:
-    """Create a no-sandbox provider — the agent runs directly on the host."""
-    return NoSandbox(env=env or {})
-
-
-# ---------------------------------------------------------------------------
-# Podman provider.
-# ---------------------------------------------------------------------------
-
-
-_IMAGE_NAME_FALLBACK = "local"
-
-
-def _derive_default_image_name(cwd: str | None = None) -> str:
-    """Derive `pysolated:<sanitized-dirname>` from `cwd` (or `os.getcwd()`).
-
-    The last path segment is lowercased and sanitized to `[a-z0-9_.-]` (other
-    runs collapse to a single `-`, trimmed from the ends). An empty result —
-    e.g. running from `/` — falls back to `pysolated:local`.
-    """
-    base = os.path.basename(os.path.abspath(cwd if cwd is not None else os.getcwd()))
-    sanitized = re.sub(r"[^a-z0-9_.-]+", "-", base.lower()).strip("-")
-    return f"pysolated:{sanitized or _IMAGE_NAME_FALLBACK}"
 
 
 class PodmanImageNotFoundError(RuntimeError):
@@ -208,27 +37,6 @@ class PodmanLaunchError(RuntimeError):
 
 
 UserNamespace = Literal["keep-id"] | None
-SELinuxLabel = Literal["z", "Z"] | None
-
-
-@dataclass(frozen=True)
-class Mount:
-    """A user-supplied bind mount for the Podman provider.
-
-    `host_path` is tilde-expanded against the host `$HOME` and, if relative,
-    resolved against the host cwd at `create()` time; the resolved path must
-    exist or `create()` fails fast. `sandbox_path` must be absolute — tilde
-    expansion on the sandbox side would require knowing the in-container HOME
-    and is deferred (see `docs/futures/features.md`). The sandbox-side parent
-    directory must already exist in the image.
-
-    `readonly=True` adds the `ro` option to the `-v` value; the provider's
-    SELinux label is composed in alongside it (e.g. `…:ro,z`).
-    """
-
-    host_path: str
-    sandbox_path: str
-    readonly: bool = False
 
 
 @dataclass
@@ -408,55 +216,6 @@ class Podman:
 
         argv.extend(["--entrypoint", "sleep", self.image, "infinity"])
         return argv
-
-
-def _resolve_mount(mount: Mount) -> Mount:
-    """Validate and resolve a `Mount` against the host filesystem.
-
-    Tilde-expands `host_path` against `$HOME`, resolves relative paths against
-    the host cwd, and raises `FileNotFoundError` if the resolved path is
-    missing. `sandbox_path` must be absolute — relative or `~`-prefixed
-    sandbox paths are rejected here because they would silently land somewhere
-    surprising inside the container.
-    """
-    if not os.path.isabs(mount.sandbox_path):
-        raise ValueError(
-            f"Mount sandbox_path must be absolute (got {mount.sandbox_path!r})"
-        )
-    host_path = os.path.abspath(os.path.expanduser(mount.host_path))
-    if not os.path.exists(host_path):
-        raise FileNotFoundError(
-            f"Mount host_path does not exist: {host_path!r} (from {mount.host_path!r})"
-        )
-    return Mount(
-        host_path=host_path,
-        sandbox_path=mount.sandbox_path,
-        readonly=mount.readonly,
-    )
-
-
-def _build_volume_spec(
-    host_path: str,
-    sandbox_path: str,
-    selinux_label: SELinuxLabel,
-    *,
-    readonly: bool = False,
-) -> str:
-    """Format a `-v` value with options composed in a stable order.
-
-    Reused by the repo mount today and by user-supplied mounts (issue #21):
-    keeping the format in one place means `:ro,z` is always composed the same
-    way no matter who supplies the mount.
-    """
-    opts: list[str] = []
-    if readonly:
-        opts.append("ro")
-    if selinux_label is not None:
-        opts.append(selinux_label)
-    spec = f"{host_path}:{sandbox_path}"
-    if opts:
-        spec += ":" + ",".join(opts)
-    return spec
 
 
 async def build_image(

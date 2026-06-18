@@ -9,6 +9,7 @@ binary is required to run these tests.
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
@@ -23,14 +24,24 @@ from pysolated import (
     PodmanLaunchError,
     podman,
 )
+import pysolated.sandboxes.podman as _podman_module_import  # noqa: F401
+
 from pysolated.sandboxes import (
     Podman,
     PodmanHandle,
-    _build_volume_spec,
-    _derive_default_image_name,
     build_image,
     remove_image,
 )
+from pysolated.sandboxes._images import _derive_default_image_name
+from pysolated.sandboxes._mounts import _build_volume_spec
+
+# `pysolated.sandboxes.podman` as a package attribute resolves to the
+# re-exported factory function, not the submodule — `from .podman import
+# podman` in the package `__init__` shadows the submodule binding. The
+# submodule still lives in `sys.modules`; grab it from there so tests can
+# patch helpers (`_stream_subprocess`, `_PODMAN_RM_TIMEOUT_SECONDS`) where
+# the provider actually looks them up.
+_podman_module = sys.modules["pysolated.sandboxes.podman"]
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +93,7 @@ class _CLIStub:
 
 @asynccontextmanager
 async def _patched(stub: _CLIStub) -> AsyncIterator[None]:
-    with patch("pysolated.sandboxes._stream_subprocess", stub):
+    with patch.object(_podman_module, "_stream_subprocess", stub):
         yield
 
 
@@ -318,7 +329,7 @@ async def test_exec_streams_via_on_line() -> None:
             on_line("line-two")
         return ExecResult(exit_code=0, stdout="line-one\nline-two", stderr="")
 
-    with patch("pysolated.sandboxes._stream_subprocess", fake_stream):
+    with patch.object(_podman_module, "_stream_subprocess", fake_stream):
         provider = podman(image="agent:latest")
         handle = await provider.create(work_dir="/home/u/repo")
         await handle.exec(["whatever"], on_line=captured.append)
@@ -363,7 +374,7 @@ async def test_close_swallows_rm_failure() -> None:
 
 async def test_close_times_out_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
     """A stuck `podman rm -f` is bounded by the close timeout."""
-    monkeypatch.setattr("pysolated.sandboxes._PODMAN_RM_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(_podman_module, "_PODMAN_RM_TIMEOUT_SECONDS", 0.05)
 
     # Inspect + run return quickly; rm hangs.
     async def fake_stream(
@@ -378,7 +389,7 @@ async def test_close_times_out_gracefully(monkeypatch: pytest.MonkeyPatch) -> No
             await asyncio.sleep(10)
         return ExecResult(exit_code=0, stdout="", stderr="")
 
-    with patch("pysolated.sandboxes._stream_subprocess", fake_stream):
+    with patch.object(_podman_module, "_stream_subprocess", fake_stream):
         provider = podman(image="agent:latest")
         handle = await provider.create(work_dir="/home/u/repo")
         # Must return within roughly the timeout, not block for 10s.
