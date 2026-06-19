@@ -132,6 +132,25 @@ class _SilentDisplay:
     def summary(self, title: str, rows: dict[str, str]) -> None: ...
 
 
+class _RecordingDisplay:
+    """Captures status() calls so tests can assert on user-visible messages."""
+
+    def __init__(self) -> None:
+        self.statuses: list[tuple[str, Severity]] = []
+        self.summary_rows: dict[str, str] = {}
+
+    def intro(self, title: str) -> None: ...
+
+    def status(self, message: str, severity: Severity) -> None:
+        self.statuses.append((message, severity))
+
+    def text(self, message: str) -> None: ...
+    def tool_call(self, name: str, formatted_args: str) -> None: ...
+
+    def summary(self, title: str, rows: dict[str, str]) -> None:
+        self.summary_rows = dict(rows)
+
+
 def _hello_line() -> str:
     return json.dumps(
         {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}
@@ -766,3 +785,127 @@ async def test_named_branch_rejects_non_no_sandbox_provider(git_repo: Path) -> N
             completion_signal="STOP",
             branch_strategy=NamedBranchStrategy(branch="feature/x"),
         )
+
+
+async def test_named_branch_clean_reuse_logs_info_message(git_repo: Path) -> None:
+    """A second run against a clean worktree logs an info "reusing" status."""
+    # First run creates the durable worktree (no reuse).
+    await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+    # Second run reuses it; capture statuses.
+    disp = _RecordingDisplay()
+    await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=disp,
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+    reuse_messages = [
+        (msg, sev) for msg, sev in disp.statuses if "Reusing worktree" in msg
+    ]
+    assert len(reuse_messages) == 1
+    assert reuse_messages[0][1] == "info"
+
+
+async def test_named_branch_dirty_reuse_warns(git_repo: Path) -> None:
+    """A reuse against a dirty worktree warns; uncommitted work is not wiped."""
+    await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+    worktree = git_repo / ".pysolated" / "worktrees" / "feature-x"
+    (worktree / "leftover.txt").write_text("dirty work\n")
+
+    disp = _RecordingDisplay()
+    await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=disp,
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+    reuse_messages = [
+        (msg, sev) for msg, sev in disp.statuses if "Reusing worktree" in msg
+    ]
+    assert len(reuse_messages) == 1
+    assert reuse_messages[0][1] == "warn"
+    assert (worktree / "leftover.txt").read_text() == "dirty work\n"
+
+
+async def test_named_branch_dirty_after_run_warns(git_repo: Path) -> None:
+    """An uncommitted-changes leftover after the agent's run surfaces a warning."""
+
+    class _DirtyLeavingAgent:
+        name = "dirty-leaver"
+        env: dict[str, str] = {}
+
+        def build_command(self, options: AgentCommandOptions) -> Command:
+            line = json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "STOP"}]},
+                }
+            )
+            script = f"printf 'unstaged\\n' > leftover.txt && printf '%s\\n' '{line}'"
+            return Command(argv=["sh", "-c", script], stdin=None)
+
+        def parse_stream_line(self, line: str):
+            return parse_stream_line(line)
+
+        def parse_session_usage(self, content: str):
+            return parse_session_usage(content)
+
+    disp = _RecordingDisplay()
+    await run(
+        agent=_DirtyLeavingAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=disp,
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+    dirty_warnings = [
+        (msg, sev)
+        for msg, sev in disp.statuses
+        if "uncommitted changes" in msg and "Reusing" not in msg
+    ]
+    assert len(dirty_warnings) == 1
+    assert dirty_warnings[0][1] == "warn"
+
+
+async def test_named_branch_clean_run_does_not_warn(git_repo: Path) -> None:
+    """A clean successful run does not emit the dirty-after-run warning."""
+    disp = _RecordingDisplay()
+    await run(
+        agent=_CommittingAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=disp,
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+    dirty_warnings = [
+        msg
+        for msg, sev in disp.statuses
+        if "uncommitted changes" in msg and sev == "warn"
+    ]
+    assert dirty_warnings == []

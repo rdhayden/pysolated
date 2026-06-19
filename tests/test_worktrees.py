@@ -347,3 +347,64 @@ async def test_named_branch_creates_new_branch_from_head_when_absent(
     assert prepared.target_branch == "feature/x"
     # The durable worktree path is surfaced for the orchestrator to forward.
     assert prepared.worktree_path == str(worktree)
+
+
+async def test_named_branch_prepare_reports_no_reuse_on_first_run(
+    git_repo: Path,
+) -> None:
+    """A fresh create-or-checkout does not flag reuse — reuse_status is None."""
+    prepared = await NamedBranchStrategy(branch="feature/x").prepare(str(git_repo))
+    assert prepared.reuse_status is None
+
+
+async def test_named_branch_prepare_flags_clean_reuse(git_repo: Path) -> None:
+    """A second run against an unchanged worktree reports a clean reuse.
+
+    The orchestrator surfaces this as the "log line" the docstring promises;
+    here we only care that the strategy itself records the state.
+    """
+    await NamedBranchStrategy(branch="feature/z").prepare(str(git_repo))
+    second = await NamedBranchStrategy(branch="feature/z").prepare(str(git_repo))
+    assert second.reuse_status == "clean"
+
+
+async def test_named_branch_prepare_flags_dirty_reuse(git_repo: Path) -> None:
+    """Reuse with uncommitted changes in the worktree reports a dirty reuse.
+
+    The orchestrator surfaces this as the "warning" the docstring promises;
+    the strategy itself records the state and never wipes the work.
+    """
+    first = await NamedBranchStrategy(branch="feature/z").prepare(str(git_repo))
+    (Path(first.work_dir) / "scratch.txt").write_text("uncommitted\n")
+    second = await NamedBranchStrategy(branch="feature/z").prepare(str(git_repo))
+    assert second.reuse_status == "dirty"
+    # The work is never wiped.
+    assert (Path(second.work_dir) / "scratch.txt").read_text() == "uncommitted\n"
+
+
+async def test_named_branch_finalize_flags_uncommitted_changes(
+    git_repo: Path,
+) -> None:
+    """Finalize warns when uncommitted changes remain in the worktree.
+
+    The flag is what the orchestrator turns into the user-visible warning;
+    the run itself still succeeds.
+    """
+    strategy = NamedBranchStrategy(branch="feature/x")
+    prepared = await strategy.prepare(str(git_repo))
+    (Path(prepared.work_dir) / "leftover.txt").write_text("unstaged\n")
+
+    finalized = await strategy.finalize(prepared, success=True)
+
+    assert finalized.dirty_after_run is True
+    assert finalized.worktree_path == prepared.worktree_path
+
+
+async def test_named_branch_finalize_clean_does_not_flag(git_repo: Path) -> None:
+    """A clean worktree at finalize doesn't flag dirty-after-run."""
+    strategy = NamedBranchStrategy(branch="feature/x")
+    prepared = await strategy.prepare(str(git_repo))
+
+    finalized = await strategy.finalize(prepared, success=True)
+
+    assert finalized.dirty_after_run is False

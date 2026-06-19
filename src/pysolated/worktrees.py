@@ -29,8 +29,11 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from .errors import BranchAlreadyCheckedOutError, MergeConflictError
+
+ReuseStatus = Literal["clean", "dirty"]
 
 
 @dataclass(frozen=True)
@@ -46,12 +49,19 @@ class PreparedRun:
     ``worktree_path`` and ``temp_branch`` are set only by ``MergeToHeadStrategy``
     so its own ``finalize`` can find what to merge back and clean up. The
     orchestrator treats them as opaque.
+
+    ``reuse_status`` is set by ``NamedBranchStrategy`` when an existing durable
+    worktree was reused — ``"clean"`` when no uncommitted changes were present
+    (orchestrator emits an info log line) and ``"dirty"`` when uncommitted work
+    was found (orchestrator emits a warning). ``None`` for fresh creates,
+    checkouts of an existing branch, and the other strategies.
     """
 
     work_dir: str
     target_branch: str | None = None
     worktree_path: str | None = None
     temp_branch: str | None = None
+    reuse_status: ReuseStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -68,10 +78,16 @@ class FinalizedRun:
     ``preserved_worktree_path`` (the exceptional "kept because something went
     wrong" channel of ``MergeToHeadStrategy``); the two fields are never both
     set on the same finalize. See ADR 0008.
+
+    ``dirty_after_run`` is set by ``NamedBranchStrategy`` when the durable
+    worktree still holds uncommitted changes after the agent's run. The run
+    itself still succeeds — the flag is how the strategy asks the orchestrator
+    to surface a warning that left-over work is in the worktree.
     """
 
     preserved_worktree_path: str | None = None
     worktree_path: str | None = None
+    dirty_after_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -238,11 +254,15 @@ class NamedBranchStrategy:
         worktree_path = worktrees_root / self.branch.replace("/", "-")
 
         if worktree_path.exists():
-            # Reuse the existing durable worktree as-is.
+            # Reuse the existing durable worktree as-is — uncommitted work is
+            # never wiped. Surface clean vs dirty so the orchestrator can log
+            # vs warn (ADR 0008).
+            dirty = await _worktree_is_dirty(worktree_path)
             return PreparedRun(
                 work_dir=str(worktree_path),
                 target_branch=self.branch,
                 worktree_path=str(worktree_path),
+                reuse_status="dirty" if dirty else "clean",
             )
 
         if await _branch_exists_locally(repo, self.branch):
@@ -274,10 +294,16 @@ class NamedBranchStrategy:
 
     async def finalize(self, prepared: PreparedRun, *, success: bool) -> FinalizedRun:
         # Durable worktree: keep on disk by design, no merge-back. The
-        # orchestrator surfaces the path on `RunResult.worktree_path`.
+        # orchestrator surfaces the path on `RunResult.worktree_path`. If the
+        # worktree has uncommitted changes after the run, flag it so the
+        # orchestrator emits a warning — the run still reports success.
+        worktree_path = prepared.worktree_path
+        assert worktree_path is not None
+        dirty = await _worktree_is_dirty(Path(worktree_path))
         return FinalizedRun(
             preserved_worktree_path=None,
-            worktree_path=prepared.worktree_path,
+            worktree_path=worktree_path,
+            dirty_after_run=dirty,
         )
 
 

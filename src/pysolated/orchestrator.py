@@ -222,6 +222,16 @@ async def run(
     # this is a pass-through (work_dir == cwd). See ADR 0007.
     prepared = await strategy.prepare(starting_cwd)
     work_dir = prepared.work_dir
+    # `branch` strategy reuse: surface a clean reuse as a log line, a dirty
+    # reuse (uncommitted work in the durable worktree) as a warning. See
+    # ADR 0008. Other strategies leave `reuse_status` as None — no-op.
+    if prepared.reuse_status == "clean":
+        disp.status(f"Reusing worktree at {work_dir}", "info")
+    elif prepared.reuse_status == "dirty":
+        disp.status(
+            f"Reusing worktree at {work_dir} with uncommitted changes",
+            "warn",
+        )
 
     success = False
 
@@ -347,6 +357,11 @@ async def run(
     if preserved_worktree_path is not None:
         disp.status(
             f"Worktree preserved at {preserved_worktree_path}",
+            "warn",
+        )
+    if finalized.dirty_after_run and worktree_path is not None:
+        disp.status(
+            f"Worktree at {worktree_path} has uncommitted changes",
             "warn",
         )
     disp.status("Run complete", "success")
