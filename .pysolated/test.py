@@ -1,7 +1,14 @@
 import asyncio
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 from pysolated import run, claude_code
 from pysolated.sandboxes import docker
+
+# Load credentials from .pysolated/.env (gitignored) into the host environment
+# so _require_env can read them. The .env is never mounted into the sandbox;
+# the values are passed explicitly via the provider's `env=`.
+load_dotenv(Path(__file__).parent / ".env")
 
 
 def _require_env(name: str) -> str:
