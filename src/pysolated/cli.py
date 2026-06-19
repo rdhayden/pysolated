@@ -12,7 +12,8 @@ import signal as os_signal
 
 import typer
 
-from .agents import PermissionMode, claude_code
+from .agents import PermissionMode
+from .agents._registry import build_agent
 from .core import RunResult
 from .errors import AgentExecutionError, IdleTimeoutError
 from .orchestrator import (
@@ -51,7 +52,10 @@ docker_app = typer.Typer(
 )
 app.add_typer(docker_app, name="docker")
 
-DEFAULT_MODEL = "claude-opus-4-7"
+# Valid `--effort` values, in their canonical order. Validated up front in the
+# CLI so an unknown value errors at the argument boundary (exit 2) instead of
+# being forwarded to a provider that would have to re-validate it.
+_VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 
 
 @app.callback()
@@ -84,7 +88,30 @@ def run_command(
             "Rejected when used with --prompt."
         ),
     ),
-    model: str = typer.Option(DEFAULT_MODEL, "--model", help="Claude model to run."),
+    agent: str = typer.Option(
+        "claude-code",
+        "--agent",
+        help=(
+            "Which agent provider to drive. Defaults to claude-code; other "
+            "registered agents resolve through the agent registry."
+        ),
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help=(
+            "Model id passed to the chosen agent. Defaults to claude-opus-4-7 "
+            "for --agent claude-code; required for any other agent."
+        ),
+    ),
+    effort: str | None = typer.Option(
+        None,
+        "--effort",
+        help=(
+            "Reasoning effort hint for agents that support it "
+            f"({'|'.join(_VALID_EFFORTS)}). Rejected for --agent claude-code."
+        ),
+    ),
     cwd: str | None = typer.Option(
         None, "--cwd", help="Repo directory to anchor the run to."
     ),
@@ -136,7 +163,24 @@ def run_command(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
 
-    agent = claude_code(model, permission_mode=permission_mode)  # type: ignore[arg-type]
+    if effort is not None and effort not in _VALID_EFFORTS:
+        typer.echo(
+            f"error: --effort must be one of {'|'.join(_VALID_EFFORTS)} "
+            f"(got {effort!r}).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        agent_provider = build_agent(
+            agent,
+            model=model,
+            effort=effort,
+            permission_mode=permission_mode,  # type: ignore[arg-type]
+        )
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
     sandbox = no_sandbox()
 
     signal_arg: str | list[str] = (
@@ -156,7 +200,7 @@ def run_command(
             handler_installed = False
         try:
             return await run_engine(
-                agent=agent,
+                agent=agent_provider,
                 sandbox=sandbox,
                 prompt=prompt,
                 prompt_file=prompt_file,
