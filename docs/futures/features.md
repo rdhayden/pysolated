@@ -19,7 +19,7 @@ the next slice reads only that one — not the whole backlog. Shipped work is in
 | Other sandbox providers (Vercel, Daytona, categories, mounts, env) | — | [sandbox-providers.md](./sandbox-providers.md) |
 | Additional agent providers (multi-agent registry) | **3** | [agent-providers.md](./agent-providers.md) |
 | Branching, worktrees & sync | **4** | [worktrees-branching-sync.md](./worktrees-branching-sync.md) |
-| Init, scaffolding & image lifecycle (issue tracker, init) | **5, 7** | [init-scaffolding.md](./init-scaffolding.md) |
+| Init, scaffolding, image lifecycle & issue tracker | **5, 7** | [init-scaffolding.md](./init-scaffolding.md) |
 | Additional entry points (`interactive()`, `createSandbox()`) | — | [entry-points.md](./entry-points.md) |
 | Agent sessions (capture / resume / fork) | — | [agent-sessions.md](./agent-sessions.md) |
 | Token usage reporting | — | [token-usage-reporting.md](./token-usage-reporting.md) |
@@ -47,10 +47,16 @@ else, so it lands last:
    → [agent-providers.md](./agent-providers.md)
 4. **Worktrees + `copyToWorktree`** — init templates reference them.
    → [worktrees-branching-sync.md](./worktrees-branching-sync.md)
-5. **Issue-tracker subsystem** — the `{{LIST_TASKS_COMMAND}}` substitution.
-   → [init-scaffolding.md](./init-scaffolding.md)
+5. ~~**Issue-tracker subsystem** — the `{{LIST_TASKS_COMMAND}}` substitution.~~
+   **Folded into init (item 7).** The issue-tracker registry only earns its keep
+   bundled with its tool-install Dockerfile snippet and `.env.example` lines, all
+   written into the scaffold together — that bundling *is* init. pysolated already
+   has `{{KEY}}` substitution + `prompt_args` + `` !`command` `` expansion, so the
+   command alone needs no standalone subsystem. There is no honest run-loop surface
+   for it before init exists. → [init-scaffolding.md](./init-scaffolding.md)
 6. **Orchestration-template surface** — the `main.ts`-equivalent pysolated lacks.
-7. **`init` scaffolding** — composes 2–6. → [init-scaffolding.md](./init-scaffolding.md)
+7. **`init` scaffolding** — composes 2–6 (incl. the issue-tracker registry from 5).
+   → [init-scaffolding.md](./init-scaffolding.md)
 
 pysolated went **Podman-first** (rootless + keep-id is the stronger isolation story
 and avoids build-arg UID alignment). With Podman shipped, the **Docker sandbox
