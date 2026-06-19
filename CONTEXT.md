@@ -43,6 +43,15 @@ orchestrator asks it to create a fresh **sandbox** per **run**. The provider hol
 configuration; the **sandbox** it creates holds the live environment.
 _Avoid_: "backend", "runtime".
 
+**Agent registry**:
+A name → **agent provider** factory map that resolves a *string* agent name
+(from the CLI `--agent` flag, and later from init/config) to a concrete **agent
+provider**. It exists only for the string-name boundary -- library callers
+construct providers directly via their typed factories and never touch the
+registry. The registry holds no behaviour beyond lookup; provider-specific
+launch options stay on each factory's typed signature.
+_Avoid_: "agent map", "provider table", "plugin registry".
+
 **No-sandbox provider**:
 A **sandbox provider** where no container is created -- the **agent** runs
 directly on the **host**. The starting point for pysolated; note it provides no

@@ -195,6 +195,7 @@ async def run(
     handle = await sandbox.create(work_dir)
     atexit_cb = _register_atexit_close(handle)
     try:
+        await _warn_if_not_git_repo(handle, work_dir, disp)
         branch = await _current_branch(handle, work_dir)
         pre_run_head = await _head_sha(handle, work_dir)
 
@@ -529,6 +530,28 @@ async def _timer_loop(
             if now - state.signal_seen_at >= completion_timeout_seconds:
                 timer_outcome.kind = "grace"
                 return
+
+
+async def _warn_if_not_git_repo(sandbox: Sandbox, cwd: str, disp: Display) -> None:
+    """Warn at run start when `cwd` is not a git repository inside the sandbox.
+
+    pysolated deliberately supports running outside a git repo — branch and
+    commit tracking just degrade to empty (see `_current_branch`). But a
+    *silent* degradation is a footgun: the common cause is launching against a
+    subdirectory of a repo. The same-path bind mount only includes `cwd`, so a
+    repo root *above* it (and its `.git`) is invisible inside the sandbox, and
+    git/`gh` commands then fail with a confusing "not a git repository" error
+    far downstream (e.g. during prompt expansion, which raises). Surfacing it
+    here, once, points straight at the fix: pass `cwd=<repo root>` to `run()`.
+    """
+    probe = await sandbox.exec(["git", "rev-parse", "--is-inside-work-tree"], cwd=cwd)
+    if probe.exit_code != 0:
+        disp.status(
+            f"{cwd!r} is not a git repository inside the sandbox — git and tools "
+            f"like `gh` will fail. If you expected a repo here, the sandbox likely "
+            f"mounted a subdirectory; pass cwd=<repo root> to run().",
+            "warn",
+        )
 
 
 async def _current_branch(sandbox: Sandbox, cwd: str) -> str:

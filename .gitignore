@@ -18,8 +18,5 @@ node_modules/
 # Tooling
 .sandcastle/
 
-# Local pysolated scratch workdir (Containerfile, prompts, .env, etc.)
-.pysolated/
-
 # Environment variables
 .env
