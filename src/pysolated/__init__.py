@@ -45,6 +45,10 @@ from .prompts import (
     substitute_arguments,
 )
 from .sandboxes import (
+    Docker,
+    DockerHandle,
+    DockerImageNotFoundError,
+    DockerLaunchError,
     Mount,
     NoSandbox,
     NoSandboxHandle,
@@ -52,6 +56,7 @@ from .sandboxes import (
     PodmanHandle,
     PodmanImageNotFoundError,
     PodmanLaunchError,
+    docker,
     no_sandbox,
     podman,
 )
@@ -76,6 +81,9 @@ __all__ = [
     "podman",
     "Podman",
     "PodmanHandle",
+    "docker",
+    "Docker",
+    "DockerHandle",
     "Mount",
     "PermissionMode",
     # Display
@@ -127,4 +135,6 @@ __all__ = [
     "StructuredOutputError",
     "PodmanImageNotFoundError",
     "PodmanLaunchError",
+    "DockerImageNotFoundError",
+    "DockerLaunchError",
 ]

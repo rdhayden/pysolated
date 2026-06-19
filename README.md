@@ -23,9 +23,10 @@ stops early on a **completion signal**, enforces an **idle timeout** and a
 post-signal **completion grace window**, reports the **commits** the agent
 made, supports **abort** via an `asyncio.Event` (or Ctrl-C from the CLI), and
 optionally extracts a schema-validated **structured output** payload from the
-agent's prose. Two sandbox providers ship: `no_sandbox` (no isolation — host
-subprocess) and `podman` (rootless container with a same-path repo bind
-mount — real isolation, see below).
+agent's prose. Three sandbox providers ship: `no_sandbox` (no isolation —
+host subprocess), `podman` (rootless container with a same-path repo bind
+mount — real isolation, see below), and `docker` (Podman's sibling for
+Docker-only hosts; mirrors Podman everywhere the two engines agree).
 
 ## Library
 
@@ -64,9 +65,9 @@ result = await run(
 
 ### Sandbox providers
 
-Two sandbox providers ship today; both implement the same factory + live-handle
-seam ([ADR 0003](docs/adr/0003-sandbox-providers-are-factories.md)), so swapping
-between them is one constructor change in your `run()` call.
+Three sandbox providers ship today; they all implement the same factory +
+live-handle seam ([ADR 0003](docs/adr/0003-sandbox-providers-are-factories.md)),
+so swapping between them is one constructor change in your `run()` call.
 
 **`no_sandbox()`** — no isolation. The agent is a host subprocess that touches
 your real working directory. Right for trusted runs in throwaway worktrees;
@@ -171,6 +172,60 @@ Memory limits and the other `podman run` knobs (`--network`, `--group-add`,
 `--device`) are tracked in
 [`docs/futures/features.md`](docs/futures/features.md) and the committed
 roadmap there.
+
+**`docker(image=…)`** — a long-lived Docker container, sibling to `podman`.
+Mirrors the Podman provider everywhere the two engines agree: same-path repo
+bind mount + `:z` label, argv-passthrough `exec` (no `sh -c`), `docker rm -f`
+on close with the same idempotent + `atexit`-backed teardown, `HOME=/home/agent`
+plus provider `env` (provider wins, **no host `os.environ` forward**), and the
+same `mounts` / `cpus` knobs through the shared volume-spec builder.
+
+The defining divergence is **UID handling**, because Docker has no
+`--userns=keep-id` ([ADR 0005](docs/adr/0005-docker-uid-alignment-via-build-arg.md)):
+
+- `container_uid` / `container_gid` default to the **host** UID/GID (resolved
+  in the `docker()` factory; falls back to `1000` where `os.getuid` is
+  unavailable). Host-UID alignment is the whole point — a `Docker(...)`
+  provider isn't reproducible across hosts the way `Podman(container_uid=1000)`
+  is.
+- `--user N:N` is **always** emitted on `docker run` — there is no `userns`
+  field and no opt-out, because alignment is a single coupled mechanism and
+  disabling it only reintroduces the silent `EACCES` it prevents.
+
+```python
+from pysolated import run, claude_code, docker
+
+await run(
+    agent=claude_code("claude-opus-4-7"),
+    sandbox=docker(
+        image="pysolated-agent:latest",
+        env={"ANTHROPIC_API_KEY": "sk-..."},  # MUST pass credentials explicitly
+    ),
+    prompt="say hi",
+)
+```
+
+The **image contract is heavier than Podman's** because `--user`, the
+forthcoming `pysolated docker build-image` build-args, and the (forthcoming)
+pre-flight all depend on it. The user-provided Containerfile must:
+
+```dockerfile
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+RUN groupmod -o -g $AGENT_GID <user> && \
+    usermod -o -u $AGENT_UID -g $AGENT_GID -d /home/agent -m -l agent <user>
+USER ${AGENT_UID}:${AGENT_GID}
+```
+
+The `-o` flag lets alignment succeed when the host UID/GID collides with one
+already in the base image; the numeric `USER` is what makes the (forthcoming)
+pre-flight `{{.Config.User}}` check parseable. `git` + the agent CLI on
+`PATH`, writable `HOME=/home/agent`.
+
+A missing image is caught up front: `create()` runs `docker image inspect
+<image>` as a preflight and raises `DockerImageNotFoundError` naming
+`pysolated docker build-image`. A failed `docker run` raises
+`DockerLaunchError`.
 
 ### Prompt templates
 
