@@ -54,8 +54,65 @@ class DockerImageNotFoundError(RuntimeError):
     """
 
 
+class DockerImageUidMismatchError(RuntimeError):
+    """Raised at `create()` when the image's baked-in UID disagrees with `container_uid`.
+
+    Docker has no `--userns=keep-id`, so a UID mismatch means silent `EACCES`
+    on image-built paths (e.g. `/home/agent`, the agent CLI). The pre-flight
+    fails loudly with both remedies named — rebuild with
+    `pysolated docker build-image`, or pass `container_uid=<image-uid>` to
+    match the image (ADR 0005).
+    """
+
+
 class DockerLaunchError(RuntimeError):
     """Raised when `docker run` fails to start the container."""
+
+
+def _check_image_user(
+    inspect: ExecResult,
+    *,
+    image: str,
+    expected_uid: int,
+) -> None:
+    """Decide whether the image's `Config.User` matches `expected_uid`.
+
+    Pure — takes the result of
+    `docker image inspect <image> --format '{{.Config.User}}'` and either
+    raises or returns. Cases:
+
+    - inspect failed (non-zero exit) → `DockerImageNotFoundError`.
+    - empty `User` (no `USER` directive) or non-numeric `User`
+      (e.g. `USER agent`) → return; the check is skipped silently because the
+      contract is documented and `{{.Config.User}}` can't be compared.
+    - numeric leading UID matches → return.
+    - numeric leading UID disagrees → `DockerImageUidMismatchError`, message
+      naming both remedies.
+
+    The check is UID-only — `{{.Config.User}}` often omits the GID and a GID
+    mismatch rarely causes the `EACCES`-on-binaries failure this guards.
+    """
+    if inspect.exit_code != 0:
+        raise DockerImageNotFoundError(
+            f"Docker image not found: {image!r}. "
+            f"Build it with `pysolated docker build-image` "
+            f"(or `docker pull {image}` if you have a remote tag)."
+        )
+    user = inspect.stdout.strip()
+    if not user:
+        return
+    head = user.split(":", 1)[0]
+    if not head.isdigit():
+        return
+    image_uid = int(head)
+    if image_uid == expected_uid:
+        return
+    raise DockerImageUidMismatchError(
+        f"Docker image {image!r} was built with UID {image_uid}, but "
+        f"`container_uid={expected_uid}`. Rebuild the image with "
+        f"`pysolated docker build-image` to bake in your host UID, or "
+        f"pass `container_uid={image_uid}` to `docker(...)` to match the image."
+    )
 
 
 def _resolve_host_uid() -> int:
@@ -139,13 +196,21 @@ class Docker:
     async def create(self, work_dir: str) -> DockerHandle:
         resolved_mounts = [_resolve_mount(m) for m in self.mounts]
 
-        inspect = await _stream_subprocess(["docker", "image", "inspect", self.image])
-        if inspect.exit_code != 0:
-            raise DockerImageNotFoundError(
-                f"Docker image not found: {self.image!r}. "
-                f"Build it with `pysolated docker build-image` "
-                f"(or `docker pull {self.image}` if you have a remote tag)."
-            )
+        inspect = await _stream_subprocess(
+            [
+                "docker",
+                "image",
+                "inspect",
+                self.image,
+                "--format",
+                "{{.Config.User}}",
+            ]
+        )
+        _check_image_user(
+            inspect,
+            image=self.image,
+            expected_uid=self.container_uid,
+        )
 
         container_name = f"pysolated-{uuid.uuid4().hex[:12]}"
         run_argv = self._build_run_argv(

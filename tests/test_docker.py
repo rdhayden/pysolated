@@ -20,6 +20,7 @@ import pytest
 
 from pysolated import (
     DockerImageNotFoundError,
+    DockerImageUidMismatchError,
     DockerLaunchError,
     ExecResult,
     Mount,
@@ -127,12 +128,19 @@ def test_explicit_uid_gid_overrides_host_default() -> None:
 
 
 async def test_create_preflights_image_inspect() -> None:
-    """`create()` runs `docker image inspect <image>` before `docker run`."""
+    """`create()` runs `docker image inspect <image> --format '{{.Config.User}}'`."""
     stub = _CLIStub()
     provider = docker(image="agent:latest")
     async with _patched(stub):
         handle = await provider.create(work_dir="/home/u/repo")
-    assert stub.calls[0]["argv"] == ["docker", "image", "inspect", "agent:latest"]
+    assert stub.calls[0]["argv"] == [
+        "docker",
+        "image",
+        "inspect",
+        "agent:latest",
+        "--format",
+        "{{.Config.User}}",
+    ]
     assert stub.calls[1]["argv"][:3] == ["docker", "run", "-d"]
     assert isinstance(handle, DockerHandle)
 
@@ -167,6 +175,179 @@ async def test_create_raises_on_run_failure() -> None:
         with pytest.raises(DockerLaunchError) as exc:
             await provider.create(work_dir="/home/u/repo")
     assert "port already in use" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight UID-match check (ADR 0005).
+# ---------------------------------------------------------------------------
+
+
+async def test_create_raises_on_uid_mismatch_with_both_remedies() -> None:
+    """A numeric image UID that disagrees with `container_uid` raises and names both fixes."""
+    stub = _CLIStub(
+        responses=[
+            ExecResult(exit_code=0, stdout="2000\n", stderr=""),  # inspect: image UID
+        ]
+    )
+    provider = docker(image="agent:latest", container_uid=1500, container_gid=1500)
+    async with _patched(stub):
+        with pytest.raises(DockerImageUidMismatchError) as exc:
+            await provider.create(work_dir="/home/u/repo")
+    msg = str(exc.value)
+    assert "2000" in msg
+    assert "1500" in msg
+    # Remedy 1: rebuild via the CLI.
+    assert "pysolated docker build-image" in msg
+    # Remedy 2: pass container_uid= to match the image.
+    assert "container_uid=2000" in msg
+    # `docker run` must not have been attempted.
+    assert len(stub.calls) == 1
+
+
+async def test_create_proceeds_when_image_uid_matches() -> None:
+    """A matching numeric `User` passes the pre-flight and `docker run` is attempted."""
+    stub = _CLIStub(
+        responses=[
+            ExecResult(exit_code=0, stdout="1500\n", stderr=""),  # inspect
+            ExecResult(exit_code=0, stdout="", stderr=""),  # run
+        ]
+    )
+    provider = docker(image="agent:latest", container_uid=1500, container_gid=1500)
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    assert stub.calls[1]["argv"][:3] == ["docker", "run", "-d"]
+
+
+async def test_create_proceeds_when_image_uid_matches_uid_gid_form() -> None:
+    """`User` of `1500:1500` parses as leading UID 1500 and matches."""
+    stub = _CLIStub(
+        responses=[
+            ExecResult(exit_code=0, stdout="1500:1500\n", stderr=""),  # inspect
+            ExecResult(exit_code=0, stdout="", stderr=""),  # run
+        ]
+    )
+    provider = docker(image="agent:latest", container_uid=1500, container_gid=1500)
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    assert stub.calls[1]["argv"][:3] == ["docker", "run", "-d"]
+
+
+async def test_create_skips_uid_check_when_user_is_empty() -> None:
+    """Empty `User` (no `USER` directive) skips the check silently."""
+    stub = _CLIStub(
+        responses=[
+            ExecResult(exit_code=0, stdout="", stderr=""),  # inspect: no USER
+            ExecResult(exit_code=0, stdout="", stderr=""),  # run
+        ]
+    )
+    provider = docker(image="agent:latest", container_uid=1500, container_gid=1500)
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    assert stub.calls[1]["argv"][:3] == ["docker", "run", "-d"]
+
+
+async def test_create_skips_uid_check_when_user_is_non_numeric() -> None:
+    """Non-numeric `User` (e.g. `agent`) skips the check silently."""
+    stub = _CLIStub(
+        responses=[
+            ExecResult(exit_code=0, stdout="agent\n", stderr=""),  # inspect: USER agent
+            ExecResult(exit_code=0, stdout="", stderr=""),  # run
+        ]
+    )
+    provider = docker(image="agent:latest", container_uid=1500, container_gid=1500)
+    async with _patched(stub):
+        await provider.create(work_dir="/home/u/repo")
+    assert stub.calls[1]["argv"][:3] == ["docker", "run", "-d"]
+
+
+# ---------------------------------------------------------------------------
+# Pure decision helper — `_check_image_user`.
+# ---------------------------------------------------------------------------
+
+
+def test_check_image_user_passes_on_numeric_match() -> None:
+    """Matching numeric leading UID returns None."""
+    assert (
+        _docker_module._check_image_user(
+            ExecResult(exit_code=0, stdout="1500", stderr=""),
+            image="agent:latest",
+            expected_uid=1500,
+        )
+        is None
+    )
+
+
+def test_check_image_user_passes_on_uid_gid_form() -> None:
+    """`User` of `1500:1500` is parsed as leading UID 1500."""
+    assert (
+        _docker_module._check_image_user(
+            ExecResult(exit_code=0, stdout="1500:1500", stderr=""),
+            image="agent:latest",
+            expected_uid=1500,
+        )
+        is None
+    )
+
+
+def test_check_image_user_raises_on_numeric_mismatch_with_both_remedies() -> None:
+    with pytest.raises(DockerImageUidMismatchError) as exc:
+        _docker_module._check_image_user(
+            ExecResult(exit_code=0, stdout="2000\n", stderr=""),
+            image="agent:latest",
+            expected_uid=1500,
+        )
+    msg = str(exc.value)
+    assert "2000" in msg
+    assert "1500" in msg
+    assert "pysolated docker build-image" in msg
+    assert "container_uid=2000" in msg
+
+
+def test_check_image_user_skips_on_empty_user() -> None:
+    """Empty `User` cannot be compared — skip silently."""
+    assert (
+        _docker_module._check_image_user(
+            ExecResult(exit_code=0, stdout="", stderr=""),
+            image="agent:latest",
+            expected_uid=1500,
+        )
+        is None
+    )
+
+
+def test_check_image_user_skips_on_non_numeric_user() -> None:
+    """Non-numeric leading `User` cannot be compared — skip silently."""
+    assert (
+        _docker_module._check_image_user(
+            ExecResult(exit_code=0, stdout="agent\n", stderr=""),
+            image="agent:latest",
+            expected_uid=1500,
+        )
+        is None
+    )
+    # `agent:agent` is also non-numeric at the head.
+    assert (
+        _docker_module._check_image_user(
+            ExecResult(exit_code=0, stdout="agent:agent", stderr=""),
+            image="agent:latest",
+            expected_uid=1500,
+        )
+        is None
+    )
+
+
+def test_check_image_user_raises_on_inspect_failure() -> None:
+    """Inspect failure raises `DockerImageNotFoundError` (and names the build command)."""
+    with pytest.raises(DockerImageNotFoundError) as exc:
+        _docker_module._check_image_user(
+            ExecResult(exit_code=1, stdout="", stderr="No such image"),
+            image="nope:latest",
+            expected_uid=1500,
+        )
+    msg = str(exc.value)
+    assert "nope:latest" in msg
+    assert "not found" in msg.lower()
+    assert "pysolated docker build-image" in msg
 
 
 async def test_run_argv_has_always_on_user_and_same_path_mount(

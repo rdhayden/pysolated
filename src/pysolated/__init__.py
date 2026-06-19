@@ -48,6 +48,7 @@ from .sandboxes import (
     Docker,
     DockerHandle,
     DockerImageNotFoundError,
+    DockerImageUidMismatchError,
     DockerLaunchError,
     Mount,
     NoSandbox,
@@ -136,5 +137,6 @@ __all__ = [
     "PodmanImageNotFoundError",
     "PodmanLaunchError",
     "DockerImageNotFoundError",
+    "DockerImageUidMismatchError",
     "DockerLaunchError",
 ]

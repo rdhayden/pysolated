@@ -26,6 +26,7 @@ from .docker import (
     Docker,
     DockerHandle,
     DockerImageNotFoundError,
+    DockerImageUidMismatchError,
     DockerLaunchError,
     docker,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "DockerHandle",
     "docker",
     "DockerImageNotFoundError",
+    "DockerImageUidMismatchError",
     "DockerLaunchError",
     # Mounts.
     "Mount",
