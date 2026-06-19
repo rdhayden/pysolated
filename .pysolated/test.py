@@ -45,7 +45,7 @@ async def main():
                 ),
             ],
         ),
-        prompt="say hi",
+        prompt="what does this repo do?",
     )
     print(result.text)
     print(result.branch, result.usage)
