@@ -23,6 +23,7 @@ routing through ``sandbox.exec``.
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
 import shutil
 import subprocess
@@ -402,6 +403,95 @@ async def _run_git(cwd: Path, *args: str) -> _GitResult:
     return result
 
 
+def validate_copy_to_worktree_paths(cwd: str, paths: list[str]) -> None:
+    """Reject `copy_to_worktree=` paths that the copy step couldn't honour.
+
+    Runs before `strategy.prepare()` so a bad path leaves no worktree on disk
+    (the orchestrator validates eagerly; the strategy hooks never see a list
+    that hasn't already passed here). Three failure modes (ADR 0009):
+
+    - **absolute** source — `copy_to_worktree=` is documented as relative to
+      ``cwd`` reproduced at the same relative location inside the worktree;
+      an absolute source has no meaningful "same relative location";
+    - **``..``-escaping** — a path that resolves outside ``cwd`` would write
+      outside the worktree on the copy step;
+    - **missing** source — silently skipping it would leave the worktree run
+      without the very state the caller declared it needs (a worktree run
+      missing its ``.env`` produces baffling downstream agent failures).
+
+    Empty strings are rejected too; they have no defensible meaning here.
+    """
+    repo = Path(cwd).resolve()
+    for raw in paths:
+        if raw == "":
+            raise ValueError("copy_to_worktree path may not be empty")
+        if os.path.isabs(raw):
+            raise ValueError(
+                f"copy_to_worktree path must be relative to cwd "
+                f"(got absolute path {raw!r})"
+            )
+        resolved = (Path(cwd) / raw).resolve()
+        try:
+            resolved.relative_to(repo)
+        except ValueError:
+            raise ValueError(
+                f"copy_to_worktree path must stay inside cwd "
+                f"(got escaping path {raw!r})"
+            ) from None
+        if not (Path(cwd) / raw).exists():
+            raise ValueError(f"copy_to_worktree path does not exist in cwd: {raw!r}")
+
+
+async def copy_paths_into_worktree(cwd: str, work_dir: str, paths: list[str]) -> None:
+    """Reproduce each `cwd`-relative path at the same relative path inside `work_dir`.
+
+    Shells out per path to ``cp -a --reflink=auto <src> <dest>``:
+
+    - ``-a`` preserves symlinks, modes, ownership, timestamps — the
+      motivating ``node_modules`` (pnpm symlink farm) case requires symlinks
+      stay intact;
+    - ``--reflink=auto`` makes the copy a copy-on-write reference on btrfs/xfs
+      (near-instant), with a full-copy fallback elsewhere.
+
+    Each dest's parent directory is created first so nested paths (e.g.
+    ``config/local.json``) work. Existing destinations are **overwritten** —
+    every run treats the host as authoritative (ADR 0009).
+
+    The caller MUST have run ``validate_copy_to_worktree_paths`` against the
+    same `cwd`/`paths` first — this function trusts the list.
+    """
+    src_root = Path(cwd)
+    dest_root = Path(work_dir)
+    for raw in paths:
+        src = src_root / raw
+        dest = dest_root / raw
+        # Overwrite policy: `cp -a` would copy *into* an existing directory
+        # rather than over it (creating `dest/<src.name>`). Remove the dest
+        # first so the host wins cleanly on reuse, including for directories.
+        if dest.is_symlink() or dest.exists():
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        proc = await asyncio.create_subprocess_exec(
+            "cp",
+            "-a",
+            "--reflink=auto",
+            str(src),
+            str(dest),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr_b = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"cp -a --reflink=auto {src} {dest} failed "
+                f"(exit {proc.returncode}): "
+                f"{stderr_b.decode('utf-8', errors='replace').strip()}"
+            )
+
+
 __all__ = [
     "BranchStrategy",
     "FinalizedRun",
@@ -409,4 +499,6 @@ __all__ = [
     "MergeToHeadStrategy",
     "NamedBranchStrategy",
     "PreparedRun",
+    "copy_paths_into_worktree",
+    "validate_copy_to_worktree_paths",
 ]

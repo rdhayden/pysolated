@@ -57,6 +57,8 @@ from .worktrees import (
     HeadStrategy,
     MergeToHeadStrategy,
     NamedBranchStrategy,
+    copy_paths_into_worktree,
+    validate_copy_to_worktree_paths as _validate_copy_to_worktree_paths,
 )
 
 DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
@@ -135,6 +137,7 @@ async def run(
     output: OutputDefinition | None = None,
     signal: asyncio.Event | None = None,
     branch_strategy: BranchStrategy | None = None,
+    copy_to_worktree: list[str] | None = None,
 ) -> RunResult:
     """Drive an agent through `max_iterations` and return a frozen `RunResult`.
 
@@ -174,6 +177,18 @@ async def run(
     event between iterations stops the outer loop before the next iteration
     starts. The CLI installs a SIGINT handler that sets this event so Ctrl-C
     aborts cleanly.
+
+    `copy_to_worktree` (optional) reproduces caller-named `cwd`-relative host
+    paths at the same relative location inside the worktree before the agent
+    runs — so gitignored state (`.env`, `node_modules`, build artifacts) the
+    clean `git checkout` would otherwise lack is available. Each path is
+    copied with `cp -a --reflink=auto`, preserving symlinks/attributes; nested
+    paths get their parent directories created automatically. Valid only with
+    `MergeToHeadStrategy` / `NamedBranchStrategy` (rejected up front with
+    `HeadStrategy`, which has no worktree). A missing, absolute, or
+    `..`-escaping path errors before any worktree is created. On a `branch`
+    reuse of a durable worktree, the listed paths are re-copied and overwrite
+    the worktree's existing copies — host wins (ADR 0009).
     """
     if max_iterations < 1:
         raise ValueError("max_iterations must be >= 1")
@@ -213,6 +228,21 @@ async def run(
             f"branch_strategy=NamedBranchStrategy(...) requires the no_sandbox provider; "
             f"got sandbox={sandbox.name!r}"
         )
+    # `copy_to_worktree` only makes sense when a worktree is created (a
+    # worktree is a clean `git checkout`; the flag fills gitignored host
+    # state). `HeadStrategy` runs in `cwd` itself — there is no worktree to
+    # copy into, so the combination is rejected up front (the foreign-flag
+    # idiom mirrors `--branch` against the wrong strategy). Validation of the
+    # paths themselves runs next, before `prepare()`, so a bad path can't
+    # leave a worktree behind.
+    if copy_to_worktree:
+        if isinstance(strategy, HeadStrategy):
+            raise ValueError(
+                "copy_to_worktree requires branch_strategy=MergeToHeadStrategy() "
+                "or NamedBranchStrategy(...); HeadStrategy runs in cwd, so there "
+                "is no worktree to copy into."
+            )
+        _validate_copy_to_worktree_paths(starting_cwd, copy_to_worktree)
 
     disp.intro(name or "pysolated")
 
@@ -232,6 +262,15 @@ async def run(
             f"Reusing worktree at {work_dir} with uncommitted changes",
             "warn",
         )
+
+    # `copy_to_worktree`: reproduce caller-named host paths at the same
+    # relative location inside the worktree. Orchestrator-owned (not a
+    # strategy hook, ADR 0009), keyed only on "is the work dir a worktree".
+    # Runs after `prepare()` (worktree exists) and before `sandbox.create()`
+    # so the copied state is visible to the agent. Re-runs on a `branch`
+    # reuse — host wins.
+    if copy_to_worktree and work_dir != starting_cwd:
+        await copy_paths_into_worktree(starting_cwd, work_dir, copy_to_worktree)
 
     success = False
 

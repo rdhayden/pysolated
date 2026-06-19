@@ -191,6 +191,15 @@ def run_command(
             "strategy; rejected with head/merge-to-head)."
         ),
     ),
+    copy_to_worktree: list[str] = typer.Option(
+        [],
+        "--copy-to-worktree",
+        help=(
+            "Host path (relative to --cwd) to reproduce inside the worktree "
+            "before the agent starts. Repeatable. Rejected with "
+            "--branch-strategy head (there is no worktree)."
+        ),
+    ),
 ) -> None:
     """Drive Claude Code on the host and print the result."""
     if prompt is None and prompt_file is None:
@@ -231,6 +240,15 @@ def run_command(
         typer.echo(
             f"error: --branch is only valid with --branch-strategy branch "
             f"(got --branch-strategy {branch_strategy}).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    # `--copy-to-worktree` only makes sense when a worktree is created
+    # (mirrors the library-side rejection in run(); foreign-flag idiom).
+    if copy_to_worktree and branch_strategy == "head":
+        typer.echo(
+            "error: --copy-to-worktree requires --branch-strategy "
+            "merge-to-head or branch (got head).",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -279,6 +297,7 @@ def run_command(
                 completion_timeout_seconds=completion_timeout,
                 signal=abort,
                 branch_strategy=strategy,
+                copy_to_worktree=copy_to_worktree or None,
             )
         finally:
             if handler_installed:

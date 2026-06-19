@@ -272,6 +272,97 @@ def test_cli_branch_flag_rejected_with_merge_to_head_strategy(monkeypatch: Any) 
     assert captured == {}
 
 
+def test_cli_copy_to_worktree_repeatable_maps_to_list(monkeypatch: Any) -> None:
+    """`--copy-to-worktree A --copy-to-worktree B` becomes `copy_to_worktree=[A, B]`."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "--prompt",
+            "go",
+            "--branch-strategy",
+            "merge-to-head",
+            "--copy-to-worktree",
+            ".env",
+            "--copy-to-worktree",
+            "node_modules",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["copy_to_worktree"] == [".env", "node_modules"]
+
+
+def test_cli_copy_to_worktree_rejected_with_head_strategy(monkeypatch: Any) -> None:
+    """`--copy-to-worktree` with `--branch-strategy head` exits 2 (foreign-flag idiom)."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "--prompt",
+            "go",
+            "--branch-strategy",
+            "head",
+            "--copy-to-worktree",
+            ".env",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--copy-to-worktree" in result.output
+    # The engine must NOT have been called when arg parsing rejected the combo.
+    assert captured == {}
+
+
+def test_cli_copy_to_worktree_accepted_with_branch_strategy(monkeypatch: Any) -> None:
+    """`--copy-to-worktree` is accepted with `--branch-strategy branch`."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "--prompt",
+            "go",
+            "--branch-strategy",
+            "branch",
+            "--branch",
+            "feature/x",
+            "--copy-to-worktree",
+            ".env",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["copy_to_worktree"] == [".env"]
+
+
+def test_cli_omitting_copy_to_worktree_passes_none(monkeypatch: Any) -> None:
+    """Default behaviour unchanged: no `--copy-to-worktree` → kwarg is None."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["run", "--prompt", "go"])
+    assert result.exit_code == 0, result.output
+    assert captured.get("copy_to_worktree") is None
+
+
 def test_cli_default_branch_strategy_unchanged_head(monkeypatch: Any) -> None:
     """Default branch strategy with no flags is still `head` (regression)."""
     from pysolated import HeadStrategy
