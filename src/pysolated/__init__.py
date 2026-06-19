@@ -16,6 +16,7 @@ from .core import (
     Command,
     Display,
     ExecResult,
+    ResultEvent,
     RunResult,
     Sandbox,
     SandboxProvider,
@@ -125,6 +126,7 @@ __all__ = [
     "TextEvent",
     "ToolCallEvent",
     "SessionIdEvent",
+    "ResultEvent",
     "Severity",
     # Errors
     "PysolatedError",

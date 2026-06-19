@@ -35,6 +35,7 @@ from .core import (
     AgentProvider,
     Display,
     ExecResult,
+    ResultEvent,
     RunResult,
     Sandbox,
     SandboxProvider,
@@ -85,12 +86,17 @@ class _IterationState:
     and records the matched signal; `_timer_loop` reads them to decide when the
     idle or completion-grace deadline has passed. All times are
     `time.monotonic()` seconds.
+
+    `last_result_event` records the last `ResultEvent` seen this iteration so
+    the orchestrator can use its text as the `AgentExecutionError` message when
+    the agent exits non-zero with empty stderr (ADR 0006).
     """
 
     matched_signal: str | None
     last_line_at: float
     signal_seen_at: float | None
     warning_anchor_at: float
+    last_result_event: ResultEvent | None = None
 
 
 @dataclass
@@ -379,6 +385,11 @@ async def _run_iteration(
         for event in agent.parse_stream_line(line):
             if isinstance(event, TextEvent):
                 agent_text.append(event.text)
+            elif isinstance(event, ResultEvent):
+                # Track the last in-band terminal/error line so a non-zero exit
+                # with empty stderr can surface its text as the error message.
+                # Intentionally not appended to `agent_text` (ADR 0006).
+                state.last_result_event = event
             _dispatch_event(display, event)
         # Match only against the agent's own prose — never tool inputs/outputs.
         # Otherwise the agent merely reading a file that quotes the signal
@@ -442,9 +453,16 @@ async def _run_iteration(
         result = exec_task.result()
         if result.exit_code != 0:
             display.status(f"Agent failed (exit {result.exit_code})", "error")
+            # stderr-empty fallback (ADR 0006): when the agent reported the
+            # failure in-band on stdout (Codex's `{type:"error"}` etc.), surface
+            # the last `ResultEvent.text` so the user sees the real reason
+            # instead of an empty stderr. Real stderr always wins when present.
+            stderr = result.stderr
+            if not stderr and state.last_result_event is not None:
+                stderr = state.last_result_event.text
             raise AgentExecutionError(
                 exit_code=result.exit_code,
-                stderr=result.stderr,
+                stderr=stderr,
                 stdout_tail=stdout,
             )
         return _IterationOutcome(
@@ -592,6 +610,10 @@ def _dispatch_event(disp: Display, event: StreamEvent) -> None:
         disp.text(event.text)
     elif isinstance(event, ToolCallEvent):
         disp.tool_call(event.name, event.args)
+    elif isinstance(event, ResultEvent):
+        # Narrow channel (ADR 0006): surface as an error status. No new Display
+        # method — the existing `status(..., "error")` seam is enough.
+        disp.status(event.text, "error")
     elif isinstance(event, SessionIdEvent):
         # Not surfaced to the display in this slice.
         pass

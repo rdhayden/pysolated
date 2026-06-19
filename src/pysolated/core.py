@@ -44,7 +44,24 @@ class SessionIdEvent:
     session_id: str
 
 
-StreamEvent = TextEvent | ToolCallEvent | SessionIdEvent
+@dataclass(frozen=True)
+class ResultEvent:
+    """A terminal status/error line an agent reports in-band on stdout.
+
+    Narrow channel (ADR 0006): providers emit it only for terminal `result` /
+    `error` JSON lines carrying a user-facing status/error message. Normal
+    assistant prose stays a `TextEvent`. The orchestrator uses the last
+    `ResultEvent` of an iteration for exactly one purpose — when the agent
+    exits non-zero with empty stderr, its text becomes the
+    `AgentExecutionError` message — and surfaces it live via
+    `display.status(..., "error")`. It never feeds prose, completion-signal
+    matching, structured-output extraction, or `RunResult`.
+    """
+
+    text: str
+
+
+StreamEvent = TextEvent | ToolCallEvent | SessionIdEvent | ResultEvent
 
 
 # ---------------------------------------------------------------------------
