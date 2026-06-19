@@ -665,6 +665,20 @@ def test_derive_default_image_name_fallback_when_all_disallowed() -> None:
     assert _derive_default_image_name("/!!!@@@") == "pysolated:local"
 
 
+def test_derive_default_image_name_strips_leading_dot() -> None:
+    """A dotfile dir (e.g. `.pysolated` scratch) yields a tag-legal name.
+
+    OCI tags must start with an alphanumeric or `_`, so a leading `.` is
+    trimmed rather than left to produce the invalid `pysolated:.pysolated`.
+    """
+    assert _derive_default_image_name("/home/u/.pysolated") == "pysolated:pysolated"
+
+
+def test_derive_default_image_name_fallback_when_only_dots() -> None:
+    """A dirname of only `.`/`-` trims to empty → `local`."""
+    assert _derive_default_image_name("/home/u/...") == "pysolated:local"
+
+
 def test_derive_default_image_name_uses_cwd_when_none(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
