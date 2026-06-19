@@ -15,7 +15,12 @@ import typer
 from .agents import PermissionMode
 from .agents._registry import build_agent
 from .core import RunResult
-from .errors import AgentExecutionError, IdleTimeoutError, MergeConflictError
+from .errors import (
+    AgentExecutionError,
+    BranchAlreadyCheckedOutError,
+    IdleTimeoutError,
+    MergeConflictError,
+)
 from .orchestrator import (
     DEFAULT_COMPLETION_SIGNAL,
     DEFAULT_COMPLETION_TIMEOUT_SECONDS,
@@ -290,7 +295,12 @@ def run_command(
     except PromptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2)
-    except (AgentExecutionError, IdleTimeoutError, MergeConflictError) as exc:
+    except (
+        AgentExecutionError,
+        BranchAlreadyCheckedOutError,
+        IdleTimeoutError,
+        MergeConflictError,
+    ) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)
 

@@ -145,6 +145,35 @@ def test_cli_agent_execution_error_exits_1_with_diagnostic_on_stderr(
     assert "42" in result.output
 
 
+def test_cli_branch_already_checked_out_error_exits_1_without_traceback(
+    monkeypatch: Any,
+) -> None:
+    """A `branch` run naming an already-checked-out branch exits 1, no traceback.
+
+    The engine raises `BranchAlreadyCheckedOutError` from `prepare`; the CLI
+    must surface its clear message on stderr and exit 1 — not let it propagate
+    as an uncaught exception dumping a Rich traceback over the message.
+    """
+    from pysolated.errors import BranchAlreadyCheckedOutError
+
+    async def checked_out_engine(**kwargs: Any) -> RunResult:
+        raise BranchAlreadyCheckedOutError(branch="main")
+
+    monkeypatch.setattr(cli_module, "run_engine", checked_out_engine)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["run", "--prompt", "go", "--branch-strategy", "branch", "--branch", "main"],
+    )
+    assert result.exit_code == 1, result.output
+    assert "already checked out" in result.output
+    # The clean message reaches the user without a propagated traceback (the
+    # only exception is typer's own SystemExit from the clean exit-1 path).
+    assert "Traceback" not in result.output
+    assert isinstance(result.exception, SystemExit)
+
+
 def test_cli_branch_strategy_branch_requires_branch_flag(monkeypatch: Any) -> None:
     """`--branch-strategy branch` without `--branch <name>` exits 2."""
     captured: dict = {}
