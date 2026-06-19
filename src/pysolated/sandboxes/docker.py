@@ -265,6 +265,35 @@ class Docker:
         return argv
 
 
+async def build_image(
+    image: str,
+    *,
+    containerfile: str = "Containerfile",
+    context: str | None = None,
+    build_args: dict[str, str] | None = None,
+) -> ExecResult:
+    """Run `docker build [--build-arg KEY=VALUE]... -f <containerfile> -t <image> <context>`.
+
+    A thin pass-through. `build_args` is supplied verbatim — the host-UID
+    resolution that powers `AGENT_UID`/`AGENT_GID` lives in the CLI layer
+    (issue #27 / ADR 0005), so this helper is testable with literal values and
+    knows nothing about the host. `context` defaults to the host cwd at call
+    time, the same directory whose name `_derive_default_image_name()` would
+    sanitize.
+    """
+    ctx = context if context is not None else os.getcwd()
+    argv: list[str] = ["docker", "build"]
+    for key, value in (build_args or {}).items():
+        argv.extend(["--build-arg", f"{key}={value}"])
+    argv.extend(["-f", containerfile, "-t", image, ctx])
+    return await _stream_subprocess(argv)
+
+
+async def remove_image(image: str) -> ExecResult:
+    """Run `docker rmi <image>`."""
+    return await _stream_subprocess(["docker", "rmi", image])
+
+
 def docker(
     *,
     image: str | None = None,

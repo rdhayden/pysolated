@@ -29,6 +29,7 @@ from pysolated import (
 import pysolated.sandboxes.docker as _docker_module_import  # noqa: F401
 
 from pysolated.sandboxes import Docker, DockerHandle
+from pysolated.sandboxes.docker import build_image, remove_image
 
 # `from .docker import docker` in `sandboxes/__init__.py` shadows the submodule
 # binding the same way it does for podman; resolve the submodule from
@@ -714,3 +715,69 @@ def test_docker_explicit_image_still_wins() -> None:
     """An explicit `image=` is used verbatim — derivation only fills the gap."""
     provider = docker(image="custom:tag")
     assert provider.image == "custom:tag"
+
+
+# ---------------------------------------------------------------------------
+# Image lifecycle helpers (issue #27) — `build_image` / `remove_image` argv.
+# ---------------------------------------------------------------------------
+
+
+async def test_build_image_uses_default_containerfile(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`build_image(tag)` with no `build_args` defaults to `-f Containerfile`, no `--build-arg`."""
+    monkeypatch.chdir(tmp_path)
+    stub = _CLIStub()
+    async with _patched(stub):
+        await build_image("pysolated:demo")
+    assert stub.calls[0]["argv"] == [
+        "docker",
+        "build",
+        "-f",
+        "Containerfile",
+        "-t",
+        "pysolated:demo",
+        str(tmp_path),
+    ]
+
+
+async def test_build_image_respects_custom_file(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    stub = _CLIStub()
+    async with _patched(stub):
+        await build_image("pysolated:demo", containerfile="docker/Dev.Containerfile")
+    argv = stub.calls[0]["argv"]
+    i = argv.index("-f")
+    assert argv[i + 1] == "docker/Dev.Containerfile"
+
+
+async def test_build_image_passes_build_args_through(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each `build_args` entry becomes `--build-arg KEY=VALUE`, ordered before `-f`."""
+    monkeypatch.chdir(tmp_path)
+    stub = _CLIStub()
+    async with _patched(stub):
+        await build_image(
+            "pysolated:demo",
+            build_args={"AGENT_UID": "1500", "AGENT_GID": "1501", "FOO": "bar"},
+        )
+    argv = stub.calls[0]["argv"]
+    # The helper is a thin pass-through; assert each --build-arg pair appears.
+    pairs = [argv[i + 1] for i, a in enumerate(argv) if a == "--build-arg"]
+    assert "AGENT_UID=1500" in pairs
+    assert "AGENT_GID=1501" in pairs
+    assert "FOO=bar" in pairs
+    # And the rest of the argv structure stays intact.
+    assert argv[0:2] == ["docker", "build"]
+    assert argv[-3:] == ["-t", "pysolated:demo", str(tmp_path)]
+
+
+async def test_remove_image_runs_rmi() -> None:
+    """`remove_image(tag)` runs `docker rmi <tag>` verbatim."""
+    stub = _CLIStub()
+    async with _patched(stub):
+        await remove_image("pysolated:demo")
+    assert stub.calls[0]["argv"] == ["docker", "rmi", "pysolated:demo"]

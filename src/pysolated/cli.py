@@ -7,6 +7,7 @@ calls the same `run()` the library exposes; it is never a parallel implementatio
 from __future__ import annotations
 
 import asyncio
+import importlib
 import signal as os_signal
 
 import typer
@@ -27,6 +28,16 @@ from .sandboxes import (
     remove_image as remove_image_helper,
 )
 from .sandboxes._images import _derive_default_image_name
+from .sandboxes.docker import (
+    build_image as docker_build_image_helper,
+    remove_image as docker_remove_image_helper,
+)
+
+# The `docker` submodule attribute is shadowed in the package namespace by the
+# re-exported factory of the same name (see `sandboxes/__init__.py`); fetch the
+# actual module via the import system so monkeypatch.setattr() against the
+# module reaches the bindings the CLI's host-UID resolution uses.
+_docker_module = importlib.import_module("pysolated.sandboxes.docker")
 
 app = typer.Typer(add_completion=False, help="Orchestrate Claude Code via run().")
 podman_app = typer.Typer(
@@ -34,6 +45,11 @@ podman_app = typer.Typer(
     help="Podman image lifecycle helpers (build / remove the agent image).",
 )
 app.add_typer(podman_app, name="podman")
+docker_app = typer.Typer(
+    add_completion=False,
+    help="Docker image lifecycle helpers (build / remove the agent image).",
+)
+app.add_typer(docker_app, name="docker")
 
 DEFAULT_MODEL = "claude-opus-4-7"
 
@@ -235,6 +251,96 @@ def podman_remove_image_command(
         )
         raise typer.Exit(code=result.exit_code)
     typer.echo(f"Removed {tag}")
+
+
+@docker_app.command("build-image")
+def docker_build_image_command(
+    file: str = typer.Option(
+        "Containerfile",
+        "--file",
+        "-f",
+        help="Containerfile path passed to `docker build -f`.",
+    ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        help="Image tag to build. Defaults to `pysolated:<sanitized-dirname>`.",
+    ),
+    build_arg: list[str] = typer.Option(
+        [],
+        "--build-arg",
+        help=(
+            "Extra `docker build --build-arg KEY=VALUE`. Repeatable. "
+            "Overrides the auto-injected AGENT_UID/AGENT_GID."
+        ),
+    ),
+) -> None:
+    """Build the Docker image used by `docker(...)`.
+
+    `AGENT_UID`/`AGENT_GID` are auto-injected from the host UID/GID so a
+    no-argument build produces a correctly-aligned image (ADR 0005). An
+    explicit `--build-arg AGENT_UID=…` overrides the auto-injected default.
+    """
+    try:
+        build_args = _resolve_docker_build_args(build_arg)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+    tag = image if image is not None else _derive_default_image_name()
+    result = asyncio.run(
+        docker_build_image_helper(tag, containerfile=file, build_args=build_args)
+    )
+    if result.exit_code != 0:
+        typer.echo(
+            result.stderr.strip() or f"docker build failed ({result.exit_code})",
+            err=True,
+        )
+        raise typer.Exit(code=result.exit_code)
+    typer.echo(f"Built {tag} from {file}")
+
+
+@docker_app.command("remove-image")
+def docker_remove_image_command(
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        help="Image tag to remove. Defaults to `pysolated:<sanitized-dirname>`.",
+    ),
+) -> None:
+    """Remove the Docker image (`docker rmi`)."""
+    tag = image if image is not None else _derive_default_image_name()
+    result = asyncio.run(docker_remove_image_helper(tag))
+    if result.exit_code != 0:
+        typer.echo(
+            result.stderr.strip() or f"docker rmi failed ({result.exit_code})", err=True
+        )
+        raise typer.Exit(code=result.exit_code)
+    typer.echo(f"Removed {tag}")
+
+
+def _resolve_docker_build_args(items: list[str]) -> dict[str, str]:
+    """Auto-inject host `AGENT_UID`/`AGENT_GID`, then layer `--build-arg` overrides on top.
+
+    Explicit `--build-arg AGENT_UID=…` wins because user entries are merged
+    last; arbitrary extra entries pass straight through to `docker build`.
+    Parsing mirrors `_parse_prompt_args` but accepts duplicates (last wins) —
+    `docker build` itself accepts the same `--build-arg KEY=…` repeated and
+    keeps the last value, so doing otherwise here would be a footgun.
+    """
+    resolved: dict[str, str] = {
+        "AGENT_UID": str(_docker_module._resolve_host_uid()),
+        "AGENT_GID": str(_docker_module._resolve_host_gid()),
+    }
+    for raw in items:
+        if "=" not in raw:
+            raise ValueError(f"--build-arg must be KEY=VALUE (got {raw!r})")
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--build-arg KEY may not be empty (got {raw!r})")
+        resolved[key] = value
+    return resolved
 
 
 def _parse_prompt_args(items: list[str]) -> dict[str, str]:

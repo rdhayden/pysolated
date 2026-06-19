@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pysolated.sandboxes.docker  # noqa: F401  (ensure submodule in sys.modules)
 import pysolated.sandboxes.podman  # noqa: F401  (ensure submodule in sys.modules)
 from typer.testing import CliRunner
 
@@ -25,6 +26,7 @@ from pysolated import cli as cli_module
 # namespace. Reach the submodule via `sys.modules` so monkey-patching hits
 # the binding the CLI's `build_image`/`remove_image` helpers actually use.
 _podman_module = sys.modules["pysolated.sandboxes.podman"]
+_docker_module = sys.modules["pysolated.sandboxes.docker"]
 
 
 def _fake_engine_capturing_kwargs(captured: dict) -> Any:
@@ -279,5 +281,232 @@ def test_cli_podman_build_image_nonzero_exit_propagates(
     monkeypatch.setattr(_podman_module, "_stream_subprocess", failing)
     runner = CliRunner()
     result = runner.invoke(cli_module.app, ["podman", "build-image"])
+    assert result.exit_code == 2, result.output
+    assert "syntax error" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `pysolated docker build-image` / `remove-image` (issue #27).
+# ---------------------------------------------------------------------------
+
+
+def _fake_docker_subprocess_recorder() -> tuple[list[list[str]], Any]:
+    """Record argv from `_stream_subprocess` on the docker submodule."""
+    from pysolated import ExecResult
+
+    calls: list[list[str]] = []
+
+    async def fake(argv: list[str], **kwargs: Any) -> ExecResult:
+        calls.append(list(argv))
+        return ExecResult(exit_code=0, stdout="", stderr="")
+
+    return calls, fake
+
+
+def test_cli_docker_build_image_auto_injects_host_uid_gid(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """`pysolated docker build-image` auto-injects `AGENT_UID=<host>`/`AGENT_GID=<host>`."""
+    project = tmp_path / "demo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(_docker_module, "_resolve_host_uid", lambda: 1500)
+    monkeypatch.setattr(_docker_module, "_resolve_host_gid", lambda: 1501)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["docker", "build-image"])
+    assert result.exit_code == 0, result.output
+
+    argv = calls[0]
+    assert argv[0:2] == ["docker", "build"]
+    pairs = [argv[i + 1] for i, a in enumerate(argv) if a == "--build-arg"]
+    assert "AGENT_UID=1500" in pairs
+    assert "AGENT_GID=1501" in pairs
+    # The derived tag and the cwd context still come through.
+    assert argv[-3:] == ["-t", "pysolated:demo", str(project)]
+
+
+def test_cli_docker_build_image_explicit_build_arg_overrides_auto(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An explicit `--build-arg AGENT_UID=…` overrides the host-UID auto-inject."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_docker_module, "_resolve_host_uid", lambda: 1500)
+    monkeypatch.setattr(_docker_module, "_resolve_host_gid", lambda: 1501)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["docker", "build-image", "--build-arg", "AGENT_UID=2000"],
+    )
+    assert result.exit_code == 0, result.output
+
+    argv = calls[0]
+    pairs = [argv[i + 1] for i, a in enumerate(argv) if a == "--build-arg"]
+    # Explicit wins for the UID; the GID stays at the auto-injected host value.
+    assert "AGENT_UID=2000" in pairs
+    assert "AGENT_UID=1500" not in pairs
+    assert "AGENT_GID=1501" in pairs
+
+
+def test_cli_docker_build_image_passes_extra_build_args(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Arbitrary `--build-arg KEY=VALUE` pairs pass through to `docker build`."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_docker_module, "_resolve_host_uid", lambda: 1000)
+    monkeypatch.setattr(_docker_module, "_resolve_host_gid", lambda: 1000)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "docker",
+            "build-image",
+            "--build-arg",
+            "FOO=bar",
+            "--build-arg",
+            "BAZ=qux",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    argv = calls[0]
+    pairs = [argv[i + 1] for i, a in enumerate(argv) if a == "--build-arg"]
+    assert "FOO=bar" in pairs
+    assert "BAZ=qux" in pairs
+    # Auto-injected values still present.
+    assert "AGENT_UID=1000" in pairs
+    assert "AGENT_GID=1000" in pairs
+
+
+def test_cli_docker_build_image_malformed_build_arg_errors(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A `--build-arg` without `=` fails fast with a clear error and no docker call."""
+    monkeypatch.chdir(tmp_path)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["docker", "build-image", "--build-arg", "MISSING_EQUALS"],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--build-arg" in result.output
+    assert "MISSING_EQUALS" in result.output
+    assert calls == []
+
+
+def test_cli_docker_build_image_empty_key_errors(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A `--build-arg =VALUE` (empty key) errors out before docker is invoked."""
+    monkeypatch.chdir(tmp_path)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["docker", "build-image", "--build-arg", "=value"],
+    )
+    assert result.exit_code == 2, result.output
+    assert calls == []
+
+
+def test_cli_docker_build_image_custom_file_flag(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """`--file` overrides the Containerfile path."""
+    project = tmp_path / "demo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(_docker_module, "_resolve_host_uid", lambda: 1000)
+    monkeypatch.setattr(_docker_module, "_resolve_host_gid", lambda: 1000)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["docker", "build-image", "--file", "docker/Dev.Containerfile"],
+    )
+    assert result.exit_code == 0, result.output
+    argv = calls[0]
+    i = argv.index("-f")
+    assert argv[i + 1] == "docker/Dev.Containerfile"
+
+
+def test_cli_docker_build_image_explicit_tag(tmp_path: Path, monkeypatch: Any) -> None:
+    """An explicit `--image` skips derivation."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_docker_module, "_resolve_host_uid", lambda: 1000)
+    monkeypatch.setattr(_docker_module, "_resolve_host_gid", lambda: 1000)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["docker", "build-image", "--image", "custom:tag"],
+    )
+    assert result.exit_code == 0, result.output
+    argv = calls[0]
+    i = argv.index("-t")
+    assert argv[i + 1] == "custom:tag"
+
+
+def test_cli_docker_remove_image_default_tag(tmp_path: Path, monkeypatch: Any) -> None:
+    """`pysolated docker remove-image` runs `docker rmi <derived>` by default."""
+    project = tmp_path / "demo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["docker", "remove-image"])
+    assert result.exit_code == 0, result.output
+    assert calls == [["docker", "rmi", "pysolated:demo"]]
+
+
+def test_cli_docker_remove_image_explicit_tag(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.chdir(tmp_path)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["docker", "remove-image", "--image", "custom:tag"],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == [["docker", "rmi", "custom:tag"]]
+
+
+def test_cli_docker_build_image_nonzero_exit_propagates(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A failing `docker build` surfaces a non-zero exit and the stderr."""
+    from pysolated import ExecResult
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_docker_module, "_resolve_host_uid", lambda: 1000)
+    monkeypatch.setattr(_docker_module, "_resolve_host_gid", lambda: 1000)
+
+    async def failing(argv: list[str], **kwargs: Any) -> ExecResult:
+        return ExecResult(exit_code=2, stdout="", stderr="syntax error")
+
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", failing)
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["docker", "build-image"])
     assert result.exit_code == 2, result.output
     assert "syntax error" in result.output
