@@ -111,6 +111,47 @@ worktree that re-runs reuse*. See ADR 0008.
   (git forbids two worktrees on one branch).
 - **`no_sandbox`-only**, hard-erroring on other library providers like `merge-to-head`.
 
+## Committed slice scope 3 (tracer bullet: `copy_to_worktree=`)
+
+Settled in a grilling session (2026-06-19), the fast-follow after the `branch`
+named strategy. A worktree is a clean `git checkout`, so gitignored host state
+(`.env`, `node_modules`, build artifacts) is **absent** inside it — a worktree
+run often can't even start the test suite. This bullet closes that gap: it
+copies caller-named host paths into the worktree before the agent starts. See
+ADR 0009.
+
+- **`run(copy_to_worktree=list[str])`** — a top-level `run()` argument, a list
+  of paths read relative to `cwd` and reproduced at the **same relative
+  location** inside the worktree. No host→dest remapping (deferred); no absolute
+  source paths.
+- **Orchestrator-owned, not a strategy hook.** The copy runs after
+  `prepare()` (the worktree exists) and before `sandbox.create()`, keyed only on
+  "is the work dir a worktree." `prepare`/`finalize` stay the only branch-strategy
+  hooks (ADR 0007).
+- **`head` hard-errors.** `copy_to_worktree` with `HeadStrategy` raises up front
+  (foreign-flag idiom) — `work_dir == cwd`, so there is no worktree to copy into.
+  Valid with **both** `merge-to-head` and `branch`.
+- **Mechanism:** `cp -a --reflink=auto <src> <dest>` per path — copy-on-write
+  (instant on btrfs/xfs, full-copy fallback elsewhere) and **symlink/attribute
+  preserving**, which the motivating `node_modules` (pnpm symlink-farm) case
+  requires. Each dest parent is `mkdir -p`'d first so nested paths work. **Copy
+  timeout deferred** — reflink makes it near-instant on the common path.
+- **Fail-fast, validated before `prepare()`** (so a bad path leaves no worktree
+  behind): a missing source path errors; a `..`-escaping or absolute source path
+  errors (it would write outside the worktree). A worktree run silently missing
+  its `.env` produces baffling downstream agent failures — better a crisp
+  up-front error.
+- **Overwrites on reuse — host wins.** Runs on **every** run, including a `branch`
+  reuse of a durable worktree; overwrites whatever is there. A deliberate
+  departure from "never wipe uncommitted work" — copied paths are gitignored
+  host-owned state, not the agent's tracked work. See ADR 0009.
+- **CLI:** repeatable `--copy-to-worktree <path>`, rejected with
+  `--branch-strategy head` (foreign-flag idiom), accepted with `merge-to-head`
+  and `branch`. CLI == `run()`.
+- **`no_sandbox`-only comes free** — `copy_to_worktree` is only reachable via the
+  two worktree strategies, which already hard-error off `no_sandbox`. No new
+  guard, no new result field.
+
 ## Deferred out of the slice
 
 - **`origin` fast-forward refresh on reuse** (Sandcastle ADR 0003's second half)
@@ -118,16 +159,19 @@ worktree that re-runs reuse*. See ADR 0008.
   yet; base defaults to `HEAD`. See ADR 0008.
 - **Worktree locking** (Sandcastle ADR 0007) — the concurrent-access mitigation,
   sequenced after reuse exactly as Sandcastle did. The gap (two runs sharing one
-  durable worktree) is documented; locking is the next slice. See ADR 0008.
+  durable worktree) is documented. Sequenced **after `copy_to_worktree=`**
+  (grilling session 2026-06-19): pysolated has no concurrency story yet, so the
+  gap is currently only reachable by a user deliberately running two processes at
+  once, whereas `copy_to_worktree` is on the critical path to worktree runs being
+  usable at all. Locking returns before container worktree wiring makes concurrent
+  runs plausible. See ADR 0008.
 - **Standalone `createWorktree()` handle** (own/reuse a worktree across multiple
   `run()` calls) → [entry-points.md](./entry-points.md) territory; the bullet wires
   `branch_strategy=` into `run()` only.
-- **`copy_to_worktree=`** — a worktree is a clean `git checkout`, so untracked host
-  files (`.env`, `node_modules`, build artifacts) are **absent** inside it. Copying
-  host paths into the fresh worktree before the agent runs (Sandcastle's
-  copy-on-write `cp --reflink` + timeout) is the natural fast-follow *because* this
-  slice introduces worktrees. The bullet documents the limitation rather than
-  closing the gap.
+- **Copy timeout + host→dest remapping + absolute source paths** — `copy_to_worktree`
+  ships as `cp -a --reflink=auto` of same-relative-location paths (committed slice
+  scope 3). A bounding timeout (Sandcastle bounded the copy), a host→worktree dest
+  remapping dict, and absolute source paths are each their own follow-up. See ADR 0009.
 - **Container (`podman`/`docker`) worktree wiring** — the bind-mount providers need
   a mount-root-vs-exec-cwd split (mount the **repo root** so both `.git` and
   `.git/worktrees/<name>` are visible — a worktree's `.git` is a *file* pointing
