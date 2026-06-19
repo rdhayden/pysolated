@@ -33,7 +33,12 @@ from .core import (
     Usage,
 )
 from .display import FileDisplay, TerminalDisplay
-from .errors import AgentExecutionError, IdleTimeoutError, PysolatedError
+from .errors import (
+    AgentExecutionError,
+    IdleTimeoutError,
+    MergeConflictError,
+    PysolatedError,
+)
 from .orchestrator import (
     DEFAULT_COMPLETION_SIGNAL,
     DEFAULT_COMPLETION_TIMEOUT_SECONDS,
@@ -79,6 +84,7 @@ from .worktrees import (
     BranchStrategy,
     FinalizedRun,
     HeadStrategy,
+    MergeToHeadStrategy,
     PreparedRun,
 )
 
@@ -135,6 +141,7 @@ __all__ = [
     # Branch strategies
     "BranchStrategy",
     "HeadStrategy",
+    "MergeToHeadStrategy",
     "PreparedRun",
     "FinalizedRun",
     # Value types
@@ -153,6 +160,7 @@ __all__ = [
     "PysolatedError",
     "AgentExecutionError",
     "IdleTimeoutError",
+    "MergeConflictError",
     "PromptError",
     "PromptArgumentError",
     "PromptExpansionError",

@@ -67,3 +67,35 @@ class IdleTimeoutError(PysolatedError):
         super().__init__(
             f"agent produced no output for {timeout_seconds:g}s (idle timeout)"
         )
+
+
+class MergeConflictError(PysolatedError):
+    """A ``merge-to-head`` run's merge-back conflicted; nothing was discarded.
+
+    The scratch branch and its worktree are **preserved** on disk so the user
+    can finish the merge by hand. The error message lists the recovery
+    commands: cd into the worktree, complete the merge, then delete the
+    scratch branch. The merge in the user's main tree was aborted, so no
+    conflict markers were left behind in their working copy.
+    """
+
+    def __init__(
+        self,
+        *,
+        worktree_path: str,
+        temp_branch: str,
+        target_branch: str,
+    ) -> None:
+        self.worktree_path = worktree_path
+        self.temp_branch = temp_branch
+        self.target_branch = target_branch
+        recovery = (
+            f"  cd {worktree_path}\n"
+            f"  git merge {temp_branch}\n"
+            f"  git branch -D {temp_branch}"
+        )
+        super().__init__(
+            f"merge of {temp_branch!r} into {target_branch!r} conflicted; "
+            f"worktree preserved at {worktree_path}.\n"
+            f"Resolve by hand:\n{recovery}"
+        )

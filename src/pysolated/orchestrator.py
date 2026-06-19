@@ -52,7 +52,7 @@ from .structured_output import (
     OutputDefinition,
     extract_structured_output,
 )
-from .worktrees import BranchStrategy, HeadStrategy
+from .worktrees import BranchStrategy, HeadStrategy, MergeToHeadStrategy
 
 DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
 DEFAULT_IDLE_TIMEOUT_SECONDS = 600.0
@@ -193,6 +193,16 @@ async def run(
         disp = TerminalDisplay(name=name)
     signals = _normalize_signals(completion_signal)
     strategy: BranchStrategy = branch_strategy or HeadStrategy()
+    # `merge-to-head` runs host-side git (worktree add, merge-back, branch -D)
+    # outside `sandbox.exec`. The bind-mount providers need a separate
+    # mount-root-vs-exec-cwd wiring slice before that's safe; until then we
+    # reject the combination up front so a half-working container path can't
+    # silently destroy the user's tree.
+    if isinstance(strategy, MergeToHeadStrategy) and sandbox.name != "no-sandbox":
+        raise ValueError(
+            f"branch_strategy=MergeToHeadStrategy() requires the no_sandbox provider; "
+            f"got sandbox={sandbox.name!r}"
+        )
 
     disp.intro(name or "pysolated")
 
@@ -210,7 +220,13 @@ async def run(
     # Ctrl-C). The `atexit` backstop catches abnormal interpreter shutdown —
     # e.g. an unhandled error in the calling code after `run()` returns its
     # exception path — so a long-lived sandbox can't leak between processes.
-    handle = await sandbox.create(work_dir)
+    try:
+        handle = await sandbox.create(work_dir)
+    except BaseException:
+        # `prepare` may have created on-disk state (a worktree) that needs to
+        # be cleaned up; finalize with success=False preserves it for recovery.
+        await _safe_finalize(strategy, prepared, success=False)
+        raise
     atexit_cb = _register_atexit_close(handle)
     try:
         await _warn_if_not_git_repo(handle, work_dir, disp)
@@ -289,40 +305,65 @@ async def run(
             extract_structured_output(prose, output) if output is not None else None
         )
 
-        disp.status("Run complete", "success")
-        disp.summary(
-            "Run summary", _summary_rows(target_branch, usage, matched_signal, commits)
-        )
-
         success = True
-        return RunResult(
-            iterations=iterations_done,
-            stdout=stdout,
-            text=prose,
-            branch=target_branch,
-            source_branch=source_branch,
-            usage=usage,
-            completion_signal=matched_signal,
-            commits=commits,
-            output=extracted_output,
-            log_file_path=log_file_path,
-        )
-    finally:
+    except BaseException:
+        # Iteration loop raised — close the handle, then finalize the
+        # strategy with success=False (preserves any worktree). The original
+        # exception propagates after cleanup; a secondary cleanup error must
+        # not mask it.
         atexit.unregister(atexit_cb)
-        # Best-effort close: a teardown failure must not mask the real outcome
-        # (return value or exception) the orchestrator is propagating.
         try:
             await handle.close()
         except Exception:  # pragma: no cover - teardown is best-effort
             pass
-        # `finalize` runs host-side AFTER the sandbox is closed — a
-        # `merge-to-head` strategy merges the scratch branch back here and
-        # decides preservation. For `head` it's a no-op. Best-effort: a
-        # teardown failure must not mask the real outcome.
-        try:
-            await strategy.finalize(success=success)
-        except Exception:  # pragma: no cover - teardown is best-effort
-            pass
+        await _safe_finalize(strategy, prepared, success=False)
+        raise
+    atexit.unregister(atexit_cb)
+    # Best-effort close: a teardown failure must not mask the real outcome
+    # (return value or exception) the orchestrator is propagating.
+    try:
+        await handle.close()
+    except Exception:  # pragma: no cover - teardown is best-effort
+        pass
+    # `finalize` runs host-side AFTER the sandbox is closed — a
+    # `merge-to-head` strategy merges the scratch branch back here and
+    # decides preservation. For `head` it's a no-op. A merge-conflict
+    # raises `MergeConflictError` *out* of `run()` so the caller sees the
+    # recovery path; the worktree + temp branch stay on disk untouched.
+    finalized = await strategy.finalize(prepared, success=success)
+    preserved_worktree_path = finalized.preserved_worktree_path
+
+    if preserved_worktree_path is not None:
+        disp.status(
+            f"Worktree preserved at {preserved_worktree_path}",
+            "warn",
+        )
+    disp.status("Run complete", "success")
+    disp.summary(
+        "Run summary",
+        _summary_rows(
+            target_branch,
+            source_branch,
+            usage,
+            matched_signal,
+            commits,
+            preserved_worktree_path,
+        ),
+    )
+
+    return RunResult(
+        iterations=iterations_done,
+        stdout=stdout,
+        text=prose,
+        branch=target_branch,
+        source_branch=source_branch,
+        usage=usage,
+        completion_signal=matched_signal,
+        commits=commits,
+        output=extracted_output,
+        log_file_path=log_file_path,
+        preserved_worktree_path=preserved_worktree_path,
+    )
 
 
 def _normalize_signals(
@@ -657,13 +698,19 @@ def _dispatch_event(disp: Display, event: StreamEvent) -> None:
 
 def _summary_rows(
     branch: str,
+    source_branch: str,
     usage: Usage | None,
     completion_signal: str | None,
     commits: list[str],
+    preserved_worktree_path: str | None,
 ) -> dict[str, str]:
     rows: dict[str, str] = {"Branch": branch or "(unknown)"}
+    if source_branch and source_branch != branch:
+        rows["Source branch"] = source_branch
     rows["Completion signal"] = completion_signal or "(none — max iterations)"
     rows["Commits"] = ", ".join(sha[:7] for sha in commits) if commits else "(none)"
+    if preserved_worktree_path is not None:
+        rows["Preserved worktree"] = preserved_worktree_path
     if usage is None:
         rows["Token usage"] = "unavailable"
     else:
@@ -672,3 +719,17 @@ def _summary_rows(
         rows["Cache read tokens"] = str(usage.cache_read_input_tokens)
         rows["Cache creation tokens"] = str(usage.cache_creation_input_tokens)
     return rows
+
+
+async def _safe_finalize(
+    strategy: BranchStrategy, prepared: object, *, success: bool
+) -> None:
+    """Call `strategy.finalize` on the error path, swallowing its own errors.
+
+    The primary exception is what the caller cares about — a cleanup failure
+    here must never mask it.
+    """
+    try:
+        await strategy.finalize(prepared, success=success)  # type: ignore[arg-type]
+    except Exception:  # pragma: no cover - teardown is best-effort
+        pass

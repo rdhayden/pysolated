@@ -12,7 +12,7 @@ from typing import Any
 
 from typer.testing import CliRunner
 
-from pysolated import RunResult
+from pysolated import HeadStrategy, MergeToHeadStrategy, RunResult
 from pysolated import cli as cli_module
 from pysolated.agents import ClaudeCode, Codex
 
@@ -182,4 +182,62 @@ def test_cli_invalid_effort_value_is_rejected(monkeypatch: Any) -> None:
         ["run", "--prompt", "go", "--effort", "extreme"],
     )
     assert result.exit_code == 2, result.output
+    assert captured == {}
+
+
+def test_cli_default_branch_strategy_is_head(monkeypatch: Any) -> None:
+    """No --branch-strategy → HeadStrategy(), preserving today's behaviour byte-for-byte."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["run", "--prompt", "go"])
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured["branch_strategy"], HeadStrategy)
+
+
+def test_cli_explicit_head_branch_strategy(monkeypatch: Any) -> None:
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app, ["run", "--prompt", "go", "--branch-strategy", "head"]
+    )
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured["branch_strategy"], HeadStrategy)
+
+
+def test_cli_explicit_merge_to_head_branch_strategy(monkeypatch: Any) -> None:
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["run", "--prompt", "go", "--branch-strategy", "merge-to-head"],
+    )
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured["branch_strategy"], MergeToHeadStrategy)
+
+
+def test_cli_unknown_branch_strategy_rejected(monkeypatch: Any) -> None:
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["run", "--prompt", "go", "--branch-strategy", "branch"],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--branch-strategy" in result.output
     assert captured == {}

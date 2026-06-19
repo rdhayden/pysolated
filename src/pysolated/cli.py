@@ -15,7 +15,7 @@ import typer
 from .agents import PermissionMode
 from .agents._registry import build_agent
 from .core import RunResult
-from .errors import AgentExecutionError, IdleTimeoutError
+from .errors import AgentExecutionError, IdleTimeoutError, MergeConflictError
 from .orchestrator import (
     DEFAULT_COMPLETION_SIGNAL,
     DEFAULT_COMPLETION_TIMEOUT_SECONDS,
@@ -28,6 +28,7 @@ from .sandboxes import (
     no_sandbox,
     remove_image as remove_image_helper,
 )
+from .worktrees import BranchStrategy, HeadStrategy, MergeToHeadStrategy
 from .sandboxes._images import _derive_default_image_name
 from .sandboxes.docker import (
     build_image as docker_build_image_helper,
@@ -56,6 +57,19 @@ app.add_typer(docker_app, name="docker")
 # CLI so an unknown value errors at the argument boundary (exit 2) instead of
 # being forwarded to a provider that would have to re-validate it.
 _VALID_EFFORTS = ("low", "medium", "high", "xhigh")
+
+# Valid `--branch-strategy` values. The CLI is a thin layer over `run()`; the
+# strategy name maps to the matching value-typed strategy below.
+_VALID_BRANCH_STRATEGIES = ("head", "merge-to-head")
+
+
+def _build_branch_strategy(name: str) -> BranchStrategy:
+    if name == "head":
+        return HeadStrategy()
+    if name == "merge-to-head":
+        return MergeToHeadStrategy()
+    # Validated upstream — defensive default.
+    raise ValueError(f"unknown branch strategy {name!r}")
 
 
 @app.callback()
@@ -147,6 +161,15 @@ def run_command(
         "--completion-timeout",
         help="Grace seconds after the completion signal before forcing success.",
     ),
+    branch_strategy: str = typer.Option(
+        "head",
+        "--branch-strategy",
+        help=(
+            "Where the agent's git work is placed "
+            f"({'|'.join(_VALID_BRANCH_STRATEGIES)}). Defaults to head — commit "
+            "directly on the current branch (today's behaviour)."
+        ),
+    ),
 ) -> None:
     """Drive Claude Code on the host and print the result."""
     if prompt is None and prompt_file is None:
@@ -170,6 +193,15 @@ def run_command(
             err=True,
         )
         raise typer.Exit(code=2)
+
+    if branch_strategy not in _VALID_BRANCH_STRATEGIES:
+        typer.echo(
+            f"error: --branch-strategy must be one of "
+            f"{'|'.join(_VALID_BRANCH_STRATEGIES)} (got {branch_strategy!r}).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    strategy = _build_branch_strategy(branch_strategy)
 
     try:
         agent_provider = build_agent(
@@ -213,6 +245,7 @@ def run_command(
                 idle_timeout_seconds=idle_timeout,
                 completion_timeout_seconds=completion_timeout,
                 signal=abort,
+                branch_strategy=strategy,
             )
         finally:
             if handler_installed:
@@ -229,7 +262,7 @@ def run_command(
     except PromptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2)
-    except (AgentExecutionError, IdleTimeoutError) as exc:
+    except (AgentExecutionError, IdleTimeoutError, MergeConflictError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)
 

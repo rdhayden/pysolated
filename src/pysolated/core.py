@@ -258,3 +258,4 @@ class RunResult(BaseModel):
     commits: list[str] = Field(default_factory=list)
     output: str | BaseModel | None = None
     log_file_path: str | None = None
+    preserved_worktree_path: str | None = None

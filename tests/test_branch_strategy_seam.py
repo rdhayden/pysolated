@@ -20,11 +20,14 @@ from pysolated import (
     Command,
     ExecResult,
     HeadStrategy,
+    MergeConflictError,
+    MergeToHeadStrategy,
     RunResult,
     Severity,
     no_sandbox,
     parse_session_usage,
     parse_stream_line,
+    podman,
     run,
 )
 from pysolated.worktrees import FinalizedRun, PreparedRun
@@ -50,10 +53,10 @@ class _RecordingStrategy:
         self.prepared_with = cwd
         return await self._inner.prepare(cwd)
 
-    async def finalize(self, *, success: bool) -> FinalizedRun:
+    async def finalize(self, prepared: PreparedRun, *, success: bool) -> FinalizedRun:
         self.events.append("finalize")
         self.finalize_success = success
-        return await self._inner.finalize(success=success)
+        return await self._inner.finalize(prepared, success=success)
 
 
 class _EventOrderSandbox:
@@ -374,3 +377,230 @@ async def test_source_branch_available_in_prompt_template(
     # The agent echoes the resolved prompt back, so the stdout carries the values.
     assert "branch=main" in result.stdout
     assert "source=main" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# merge-to-head integration tests against a real git repo + no_sandbox.
+# ---------------------------------------------------------------------------
+
+
+class _CommittingAgent:
+    """Writes a file, commits it inside the work_dir, then prints the signal.
+
+    Runs through `sh -c` so the work_dir set by the orchestrator is the cwd
+    git operates in — the worktree path for merge-to-head, cwd for head.
+    """
+
+    name = "committing"
+    env: dict[str, str] = {}
+
+    def __init__(self, content: str = "agent\n", filename: str = "agent.txt") -> None:
+        self._content = content
+        self._filename = filename
+
+    def build_command(self, options: AgentCommandOptions) -> Command:
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "done STOP"}]},
+            }
+        )
+        script = (
+            f"printf '%s' '{self._content}' > {self._filename} && "
+            f"git -c user.email=agent@test -c user.name=agent add {self._filename} && "
+            f"git -c user.email=agent@test -c user.name=agent commit -qm 'agent commit' && "
+            f"printf '%s\\n' '{line}'"
+        )
+        return Command(argv=["sh", "-c", script], stdin=None)
+
+    def parse_stream_line(self, line: str):
+        return parse_stream_line(line)
+
+    def parse_session_usage(self, content: str):
+        return parse_session_usage(content)
+
+
+async def test_merge_to_head_run_merges_back_to_target(git_repo: Path) -> None:
+    """End-to-end: merge-to-head runs in a worktree and merges back to main."""
+    result = await run(
+        agent=_CommittingAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=MergeToHeadStrategy(),
+    )
+    # Target is the host branch; source is the temp scratch branch.
+    assert result.branch == "main"
+    assert result.source_branch.startswith("pysolated/")
+    assert result.preserved_worktree_path is None
+    # The agent's commit must be reachable from main.
+    log = subprocess.run(
+        ["git", "log", "--oneline", "main"],
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "agent commit" in log
+    # The scratch branch is deleted; the worktree is gone.
+    branches = subprocess.run(
+        ["git", "branch", "--list", result.source_branch],
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert branches == ""
+    assert not (
+        git_repo / ".pysolated" / "worktrees" / result.source_branch.split("/")[-1]
+    ).exists()
+
+
+async def test_merge_to_head_writes_gitignore_into_repo(git_repo: Path) -> None:
+    """A merge-to-head run writes `.pysolated/worktrees/.gitignore`."""
+    await run(
+        agent=_CommittingAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=MergeToHeadStrategy(),
+    )
+    gitignore = git_repo / ".pysolated" / "worktrees" / ".gitignore"
+    assert gitignore.exists()
+    assert gitignore.read_text().strip() == "*"
+
+
+async def test_merge_to_head_conflict_propagates_as_run_error(git_repo: Path) -> None:
+    """A merge conflict from finalize surfaces as ``MergeConflictError`` out of run()."""
+
+    class _ConflictAgent:
+        name = "conflict"
+        env: dict[str, str] = {}
+
+        def build_command(self, options: AgentCommandOptions) -> Command:
+            line = json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "STOP"}]},
+                }
+            )
+            # The agent commits "agent version" of conflict.txt inside the worktree.
+            script = (
+                "printf '%s' 'agent version\n' > conflict.txt && "
+                "git -c user.email=a@a -c user.name=a add conflict.txt && "
+                "git -c user.email=a@a -c user.name=a commit -qm 'agent change' && "
+                f"printf '%s\\n' '{line}'"
+            )
+            return Command(argv=["sh", "-c", script], stdin=None)
+
+        def parse_stream_line(self, line: str):
+            return parse_stream_line(line)
+
+        def parse_session_usage(self, content: str):
+            return parse_session_usage(content)
+
+    # Wrap MergeToHeadStrategy with a tiny adapter that diverges the host
+    # branch between prepare and the agent's run. The strategy itself is
+    # frozen, so we compose rather than mutate; the adapter forwards finalize
+    # straight through.
+    class _DivergingStrategy:
+        def __init__(self) -> None:
+            self._inner = MergeToHeadStrategy()
+
+        async def prepare(self, cwd: str) -> PreparedRun:
+            prepared = await self._inner.prepare(cwd)
+            repo = Path(cwd)
+            (repo / "conflict.txt").write_text("host version\n")
+            subprocess.run(
+                ["git", "add", "conflict.txt"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-qm", "host change"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+            return prepared
+
+        async def finalize(
+            self, prepared: PreparedRun, *, success: bool
+        ) -> FinalizedRun:
+            return await self._inner.finalize(prepared, success=success)
+
+    strategy = _DivergingStrategy()
+
+    with pytest.raises(MergeConflictError) as excinfo:
+        await run(
+            agent=_ConflictAgent(),
+            sandbox=no_sandbox(),
+            prompt="go",
+            cwd=str(git_repo),
+            display=_SilentDisplay(),
+            completion_signal="STOP",
+            branch_strategy=strategy,
+        )
+
+    # The worktree is preserved on disk; the user's tree has no markers.
+    assert Path(excinfo.value.worktree_path).exists()
+    assert "<<<<<<<" not in (git_repo / "conflict.txt").read_text()
+
+
+async def test_merge_to_head_preserved_worktree_path_on_run_result(
+    git_repo: Path,
+) -> None:
+    """A dirty (uncommitted) worktree on success is preserved on `RunResult`."""
+
+    class _DirtyAgent:
+        name = "dirty"
+        env: dict[str, str] = {}
+
+        def build_command(self, options: AgentCommandOptions) -> Command:
+            line = json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "STOP"}]},
+                }
+            )
+            # Write a file but do NOT commit it.
+            script = f"printf '%s' 'dirty\n' > dirty.txt && printf '%s\\n' '{line}'"
+            return Command(argv=["sh", "-c", script], stdin=None)
+
+        def parse_stream_line(self, line: str):
+            return parse_stream_line(line)
+
+        def parse_session_usage(self, content: str):
+            return parse_session_usage(content)
+
+    result = await run(
+        agent=_DirtyAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=MergeToHeadStrategy(),
+    )
+    assert result.preserved_worktree_path is not None
+    assert Path(result.preserved_worktree_path).exists()
+    assert (Path(result.preserved_worktree_path) / "dirty.txt").exists()
+
+
+async def test_merge_to_head_rejects_non_no_sandbox_provider(git_repo: Path) -> None:
+    """A non-no_sandbox provider hard-errors up front."""
+    with pytest.raises(ValueError, match="MergeToHeadStrategy"):
+        await run(
+            agent=_NoopRealAgent(),
+            sandbox=podman(image="dummy"),
+            prompt="go",
+            cwd=str(git_repo),
+            display=_SilentDisplay(),
+            completion_signal="STOP",
+            branch_strategy=MergeToHeadStrategy(),
+        )
