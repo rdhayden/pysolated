@@ -1,8 +1,8 @@
-"""Agent providers — command building and stream parsing.
+"""The Claude Code agent provider.
 
-v1 ships one provider, `claude_code`. The stream parser and usage parser are
-pure module-level functions (the provider delegates to them) so they can be
-table-tested directly without constructing a provider.
+The stream parser and usage parser are pure module-level functions (the
+provider delegates to them) so they can be table-tested directly without
+constructing a provider.
 """
 
 from __future__ import annotations
@@ -11,24 +11,14 @@ import json
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .core import (
+from ..core import (
     AgentCommandOptions,
     Command,
     SessionIdEvent,
     StreamEvent,
-    TextEvent,
-    ToolCallEvent,
     Usage,
 )
-
-# Allowlisted tools, mapped to the input field carrying the display arg.
-# Anything not listed here is dropped — we never surface arbitrary tool input.
-TOOL_ARG_FIELDS: dict[str, str] = {
-    "Bash": "command",
-    "WebSearch": "query",
-    "WebFetch": "url",
-    "Agent": "description",
-}
+from ._parsing import parse_assistant_content_blocks
 
 
 def parse_stream_line(line: str) -> list[StreamEvent]:
@@ -55,32 +45,7 @@ def parse_stream_line(line: str) -> list[StreamEvent]:
         and isinstance(message, dict)
         and isinstance(message.get("content"), list)
     ):
-        events: list[StreamEvent] = []
-        texts: list[str] = []
-        for block in message["content"]:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type")
-            if block_type == "text" and isinstance(block.get("text"), str):
-                texts.append(block["text"])
-            elif (
-                block_type == "tool_use"
-                and isinstance(block.get("name"), str)
-                and isinstance(block.get("input"), dict)
-            ):
-                arg_field = TOOL_ARG_FIELDS.get(block["name"])
-                if arg_field is None:
-                    continue  # not allowlisted
-                arg_value = block["input"].get(arg_field)
-                if not isinstance(arg_value, str):
-                    continue  # missing / wrong-typed arg field
-                if texts:
-                    events.append(TextEvent(text="".join(texts)))
-                    texts = []
-                events.append(ToolCallEvent(name=block["name"], args=arg_value))
-        if texts:
-            events.append(TextEvent(text="".join(texts)))
-        return events
+        return parse_assistant_content_blocks(message["content"])
 
     if (
         obj.get("type") == "system"
