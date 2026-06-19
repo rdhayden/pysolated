@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 
 from pysolated import RunResult
 from pysolated import cli as cli_module
-from pysolated.agents import ClaudeCode
+from pysolated.agents import ClaudeCode, Codex
 
 
 def _fake_engine_capturing_kwargs(captured: dict) -> Any:
@@ -69,10 +69,10 @@ def test_cli_unknown_agent_errors_exit_2_and_lists_valid_agents(
 
     runner = CliRunner()
     result = runner.invoke(
-        cli_module.app, ["run", "--agent", "codex", "--prompt", "go"]
+        cli_module.app, ["run", "--agent", "opencode", "--prompt", "go"]
     )
     assert result.exit_code == 2, result.output
-    assert "codex" in result.output
+    assert "opencode" in result.output
     assert "claude-code" in result.output
     # Engine was never invoked.
     assert captured == {}
@@ -92,6 +92,80 @@ def test_cli_effort_with_claude_code_errors_exit_2(monkeypatch: Any) -> None:
     assert result.exit_code == 2, result.output
     assert "--effort" in result.output
     assert "claude-code" in result.output
+    assert captured == {}
+
+
+def test_cli_codex_requires_model(monkeypatch: Any) -> None:
+    """Missing --model with --agent codex errors at the argument boundary."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app, ["run", "--agent", "codex", "--prompt", "go"]
+    )
+    assert result.exit_code == 2, result.output
+    assert "--model" in result.output
+    assert "codex" in result.output
+    assert captured == {}
+
+
+def test_cli_codex_with_model_and_effort(monkeypatch: Any) -> None:
+    """`--agent codex --model gpt-5 --effort high` builds a configured Codex."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "--agent",
+            "codex",
+            "--model",
+            "gpt-5",
+            "--effort",
+            "high",
+            "--prompt",
+            "go",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    agent = captured["agent"]
+    assert isinstance(agent, Codex)
+    assert agent.model == "gpt-5"
+    assert agent.effort == "high"
+
+
+def test_cli_codex_rejects_permission_mode(monkeypatch: Any) -> None:
+    """`--permission-mode` is meaningless to Codex and must be rejected."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "--agent",
+            "codex",
+            "--model",
+            "gpt-5",
+            "--permission-mode",
+            "auto",
+            "--prompt",
+            "go",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--permission-mode" in result.output
+    assert "codex" in result.output
     assert captured == {}
 
 

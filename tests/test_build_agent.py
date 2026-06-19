@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from pysolated.agents import ClaudeCode
+from pysolated.agents import ClaudeCode, Codex
 from pysolated.agents._registry import build_agent
 
 
@@ -44,7 +44,45 @@ def test_build_agent_rejects_effort_on_claude_code() -> None:
 
 def test_build_agent_unknown_name_errors_and_lists_valid_agents() -> None:
     with pytest.raises(ValueError) as info:
-        build_agent("codex", model="gpt-5")
+        build_agent("opencode", model="gpt-5")
+    msg = str(info.value)
+    assert "opencode" in msg
+    assert "claude-code" in msg
+
+
+def test_build_agent_resolves_codex_with_explicit_model() -> None:
+    agent = build_agent("codex", model="gpt-5")
+    assert isinstance(agent, Codex)
+    assert agent.model == "gpt-5"
+    assert agent.effort is None
+
+
+def test_build_agent_codex_requires_model() -> None:
+    with pytest.raises(ValueError) as info:
+        build_agent("codex", model=None)
+    msg = str(info.value)
+    assert "--model" in msg
+    assert "codex" in msg
+
+
+def test_build_agent_codex_passes_effort() -> None:
+    agent = build_agent("codex", model="gpt-5", effort="high")
+    assert isinstance(agent, Codex)
+    assert agent.effort == "high"
+
+
+def test_build_agent_rejects_permission_mode_on_codex() -> None:
+    with pytest.raises(ValueError) as info:
+        build_agent("codex", model="gpt-5", permission_mode="auto")
+    msg = str(info.value)
+    assert "--permission-mode" in msg
+    assert "codex" in msg
+
+
+def test_build_agent_unknown_name_lists_codex_too() -> None:
+    """Codex is now registered; the error message should advertise it."""
+    with pytest.raises(ValueError) as info:
+        build_agent("does-not-exist", model="x")
     msg = str(info.value)
     assert "codex" in msg
     assert "claude-code" in msg

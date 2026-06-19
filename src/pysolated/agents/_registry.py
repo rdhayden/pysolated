@@ -17,6 +17,7 @@ from typing import Callable
 
 from ..core import AgentProvider
 from .claude_code import PermissionMode, claude_code
+from .codex import codex
 
 _CLAUDE_CODE_DEFAULT_MODEL = "claude-opus-4-7"
 
@@ -36,6 +37,19 @@ def _build_claude_code(
     )
 
 
+def _build_codex(
+    *,
+    model: str | None,
+    effort: str | None,
+    permission_mode: str | None,
+) -> AgentProvider:
+    if permission_mode is not None:
+        raise ValueError("--permission-mode is not supported by the codex agent.")
+    if model is None:
+        raise ValueError("--model is required for the codex agent.")
+    return codex(model, effort=effort)  # type: ignore[arg-type]
+
+
 # Keyed on the provider's ``.name``. Each entry resolves CLI options into a
 # concrete provider; provider-specific rejections live here, not in the CLI.
 _REGISTRY: dict[
@@ -43,6 +57,7 @@ _REGISTRY: dict[
     Callable[..., AgentProvider],
 ] = {
     "claude-code": _build_claude_code,
+    "codex": _build_codex,
 }
 
 
