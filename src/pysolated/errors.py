@@ -69,6 +69,25 @@ class IdleTimeoutError(PysolatedError):
         )
 
 
+class BranchAlreadyCheckedOutError(PysolatedError):
+    """The named ``branch`` is already checked out in the main working tree.
+
+    git forbids two worktrees on the same branch, so a ``branch`` strategy run
+    targeting a branch that is currently checked out in the user's main repo
+    cannot create its durable worktree. Surfaced as a clear pysolated error
+    instead of leaking the raw ``fatal: ... is already checked out at ...``
+    git message.
+    """
+
+    def __init__(self, *, branch: str) -> None:
+        self.branch = branch
+        super().__init__(
+            f"branch {branch!r} is already checked out in the main working tree; "
+            f"git forbids two worktrees on one branch. Switch the main tree to "
+            f"another branch, or pick a different --branch."
+        )
+
+
 class MergeConflictError(PysolatedError):
     """A ``merge-to-head`` run's merge-back conflicted; nothing was discarded.
 

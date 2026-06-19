@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from pysolated import HeadStrategy, MergeConflictError, MergeToHeadStrategy
+from pysolated import (
+    HeadStrategy,
+    MergeConflictError,
+    MergeToHeadStrategy,
+    NamedBranchStrategy,
+)
 
 
 async def test_head_strategy_prepare_returns_cwd_unchanged(tmp_path: Path) -> None:
@@ -232,3 +237,113 @@ async def test_merge_to_head_failure_preserves_worktree(git_repo: Path) -> None:
 
     assert finalized.preserved_worktree_path == str(worktree)
     assert worktree.exists()
+
+
+# ---------------------------------------------------------------------------
+# NamedBranchStrategy — tested against a real temporary git repo.
+# ---------------------------------------------------------------------------
+
+
+async def test_named_branch_finalize_keeps_worktree_and_surfaces_path(
+    git_repo: Path,
+) -> None:
+    """Finalize keeps the durable worktree on disk and surfaces its path."""
+    strategy = NamedBranchStrategy(branch="feature/a")
+    prepared = await strategy.prepare(str(git_repo))
+    worktree = Path(prepared.work_dir)
+
+    finalized = await strategy.finalize(prepared, success=True)
+
+    # The durable worktree is *not* deleted — even on a clean successful run.
+    assert worktree.exists()
+    # It surfaces on `worktree_path` (not `preserved_worktree_path` — that's
+    # the merge-to-head exception channel).
+    assert finalized.worktree_path == str(worktree)
+    assert finalized.preserved_worktree_path is None
+
+
+async def test_named_branch_rejects_branch_already_in_main_tree(
+    git_repo: Path,
+) -> None:
+    """Targeting the branch checked out in the main tree raises a clear pysolated error."""
+    # `main` is already checked out in the main working tree (the fixture seeded it).
+    from pysolated import BranchAlreadyCheckedOutError
+
+    strategy = NamedBranchStrategy(branch="main")
+    with pytest.raises(BranchAlreadyCheckedOutError) as excinfo:
+        await strategy.prepare(str(git_repo))
+
+    err = excinfo.value
+    assert err.branch == "main"
+    # The error message must mention the branch and not be the raw git output.
+    assert "main" in str(err)
+    assert "fatal:" not in str(err)
+
+
+async def test_named_branch_reuses_existing_worktree_and_preserves_dirty_state(
+    git_repo: Path,
+) -> None:
+    """A second run targeting the same branch reuses the worktree, even if dirty.
+
+    Uncommitted work in the durable worktree must never be wiped on reuse.
+    """
+    strategy = NamedBranchStrategy(branch="feature/z")
+    first = await strategy.prepare(str(git_repo))
+    worktree = Path(first.work_dir)
+    (worktree / "scratch.txt").write_text("unstaged work\n")
+
+    second = await NamedBranchStrategy(branch="feature/z").prepare(str(git_repo))
+
+    assert second.work_dir == first.work_dir
+    assert second.worktree_path == first.worktree_path
+    assert (Path(second.work_dir) / "scratch.txt").read_text() == "unstaged work\n"
+
+
+async def test_named_branch_checks_out_existing_local_branch(
+    git_repo: Path,
+) -> None:
+    """An existing local branch with no worktree is checked out into a new worktree."""
+    # Create the branch locally on a divergent commit so we can tell which
+    # ref the worktree ended up on.
+    _git(git_repo, "checkout", "-q", "-b", "feature/y")
+    (git_repo / "y.txt").write_text("y\n")
+    _git(git_repo, "add", "y.txt")
+    _git(git_repo, "commit", "-qm", "y")
+    feature_head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _git(git_repo, "checkout", "-q", "main")
+
+    strategy = NamedBranchStrategy(branch="feature/y")
+    prepared = await strategy.prepare(str(git_repo))
+
+    worktree = Path(prepared.work_dir)
+    assert worktree.is_dir()
+    # Worktree dir name has slashes replaced with dashes.
+    assert worktree.name == "feature-y"
+    # The worktree is on the existing branch and at its existing tip.
+    assert _git(worktree, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/y"
+    assert _git(worktree, "rev-parse", "HEAD").strip() == feature_head
+
+
+async def test_named_branch_creates_new_branch_from_head_when_absent(
+    git_repo: Path,
+) -> None:
+    """A non-existent branch name creates the branch from the host's HEAD."""
+    strategy = NamedBranchStrategy(branch="feature/x")
+    prepared = await strategy.prepare(str(git_repo))
+
+    # Work dir is the deterministic durable worktree path.
+    worktree = Path(prepared.work_dir)
+    assert worktree.is_dir()
+    # Slashes in the branch name become dashes in the directory name.
+    assert worktree == git_repo / ".pysolated" / "worktrees" / "feature-x"
+    # The worktree is checked out on the named branch.
+    branch_in_worktree = _git(worktree, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    assert branch_in_worktree == "feature/x"
+    # The branch's tip equals the host's HEAD (it was created from HEAD).
+    host_head = _git(git_repo, "rev-parse", "HEAD").strip()
+    new_head = _git(worktree, "rev-parse", "HEAD").strip()
+    assert new_head == host_head
+    # For `branch`, source == target == the named branch.
+    assert prepared.target_branch == "feature/x"
+    # The durable worktree path is surfaced for the orchestrator to forward.
+    assert prepared.worktree_path == str(worktree)

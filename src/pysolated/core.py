@@ -244,6 +244,12 @@ class RunResult(BaseModel):
     the scratch branch merges into. `source_branch` is the branch the agent
     committed *on* during the run. For `head` it equals `branch`; for
     `merge-to-head` it's the temporary scratch branch.
+
+    `worktree_path` carries the **durable worktree** the `branch` strategy
+    kept on disk by design (always set for `branch`, `None` otherwise).
+    `preserved_worktree_path` is the exception channel of `merge-to-head` —
+    the worktree was kept because something went wrong (merge conflict or
+    uncommitted changes). The two are never both set; see ADR 0008.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -259,3 +265,4 @@ class RunResult(BaseModel):
     output: str | BaseModel | None = None
     log_file_path: str | None = None
     preserved_worktree_path: str | None = None
+    worktree_path: str | None = None

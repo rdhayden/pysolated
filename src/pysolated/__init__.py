@@ -35,6 +35,7 @@ from .core import (
 from .display import FileDisplay, TerminalDisplay
 from .errors import (
     AgentExecutionError,
+    BranchAlreadyCheckedOutError,
     IdleTimeoutError,
     MergeConflictError,
     PysolatedError,
@@ -85,6 +86,7 @@ from .worktrees import (
     FinalizedRun,
     HeadStrategy,
     MergeToHeadStrategy,
+    NamedBranchStrategy,
     PreparedRun,
 )
 
@@ -142,6 +144,7 @@ __all__ = [
     "BranchStrategy",
     "HeadStrategy",
     "MergeToHeadStrategy",
+    "NamedBranchStrategy",
     "PreparedRun",
     "FinalizedRun",
     # Value types
@@ -159,6 +162,7 @@ __all__ = [
     # Errors
     "PysolatedError",
     "AgentExecutionError",
+    "BranchAlreadyCheckedOutError",
     "IdleTimeoutError",
     "MergeConflictError",
     "PromptError",

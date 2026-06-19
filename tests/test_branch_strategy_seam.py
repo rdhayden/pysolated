@@ -17,11 +17,13 @@ import pytest
 
 from pysolated import (
     AgentCommandOptions,
+    BranchAlreadyCheckedOutError,
     Command,
     ExecResult,
     HeadStrategy,
     MergeConflictError,
     MergeToHeadStrategy,
+    NamedBranchStrategy,
     RunResult,
     Severity,
     no_sandbox,
@@ -603,4 +605,164 @@ async def test_merge_to_head_rejects_non_no_sandbox_provider(git_repo: Path) -> 
             display=_SilentDisplay(),
             completion_signal="STOP",
             branch_strategy=MergeToHeadStrategy(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# NamedBranchStrategy integration tests against a real git repo + no_sandbox.
+# ---------------------------------------------------------------------------
+
+
+async def test_named_branch_run_commits_land_on_named_branch_no_merge_back(
+    git_repo: Path,
+) -> None:
+    """Agent commits land on the named branch; the host's current branch is untouched."""
+    pre_run_main = subprocess.run(
+        ["git", "rev-parse", "main"],
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    result = await run(
+        agent=_CommittingAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+
+    # For `branch`, source == target == the named branch.
+    assert result.branch == "feature/x"
+    assert result.source_branch == "feature/x"
+    # The agent's commit must be on the named branch.
+    feature_log = subprocess.run(
+        ["git", "log", "--oneline", "feature/x"],
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "agent commit" in feature_log
+    # No merge-back: main's tip is unchanged.
+    post_run_main = subprocess.run(
+        ["git", "rev-parse", "main"],
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert post_run_main == pre_run_main
+    # The named branch must NOT be reachable from main (no merge happened).
+    main_log = subprocess.run(
+        ["git", "log", "--oneline", "main"],
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "agent commit" not in main_log
+
+
+async def test_named_branch_run_result_surfaces_durable_worktree_path(
+    git_repo: Path,
+) -> None:
+    """`RunResult.worktree_path` points at the durable worktree; preserved is None."""
+    result = await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+
+    assert result.worktree_path is not None
+    assert Path(result.worktree_path).is_dir()
+    # The durable channel is `worktree_path`, NOT `preserved_worktree_path`.
+    assert result.preserved_worktree_path is None
+    # The durable worktree dir is at the deterministic path.
+    assert (
+        Path(result.worktree_path)
+        == git_repo / ".pysolated" / "worktrees" / "feature-x"
+    )
+
+
+async def test_named_branch_run_keeps_worktree_after_run(git_repo: Path) -> None:
+    """The durable worktree persists by design — not removed at run end."""
+    result = await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+    assert result.worktree_path is not None
+    assert Path(result.worktree_path).exists()
+
+
+async def test_named_branch_reuse_does_not_wipe_dirty_worktree(
+    git_repo: Path,
+) -> None:
+    """A second run targeting the same branch reuses the worktree without wiping."""
+    await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+    worktree = git_repo / ".pysolated" / "worktrees" / "feature-x"
+    (worktree / "scratch.txt").write_text("uncommitted host work\n")
+
+    result = await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=NamedBranchStrategy(branch="feature/x"),
+    )
+
+    assert result.worktree_path == str(worktree)
+    # Uncommitted work survives the second run.
+    assert (worktree / "scratch.txt").read_text() == "uncommitted host work\n"
+
+
+async def test_named_branch_already_in_main_tree_raises_clear_error(
+    git_repo: Path,
+) -> None:
+    """Naming the branch already checked out in the main tree raises a clear pysolated error."""
+    with pytest.raises(BranchAlreadyCheckedOutError):
+        await run(
+            agent=_NoopRealAgent(),
+            sandbox=no_sandbox(),
+            prompt="go",
+            cwd=str(git_repo),
+            display=_SilentDisplay(),
+            completion_signal="STOP",
+            branch_strategy=NamedBranchStrategy(branch="main"),
+        )
+
+
+async def test_named_branch_rejects_non_no_sandbox_provider(git_repo: Path) -> None:
+    """`branch` with a non-no_sandbox provider hard-errors up front."""
+    with pytest.raises(ValueError, match="NamedBranchStrategy"):
+        await run(
+            agent=_NoopRealAgent(),
+            sandbox=podman(image="dummy"),
+            prompt="go",
+            cwd=str(git_repo),
+            display=_SilentDisplay(),
+            completion_signal="STOP",
+            branch_strategy=NamedBranchStrategy(branch="feature/x"),
         )

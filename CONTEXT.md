@@ -100,8 +100,10 @@ _Avoid_: "grace period" (too generic), "drain timeout".
 How a **run**'s git work is placed. `head` runs the **agent** directly on the
 current branch (no worktree); `merge-to-head` runs it in a **worktree** on a
 temporary scratch branch and merges that back to the current branch when the run
-ends. A *value* passed to `run()` (a closed set of modes with shared git
-behaviour), not a user-pluggable **provider** Protocol.
+ends; `branch` runs it in a **durable worktree** on a caller-named branch and
+leaves the commits there (no merge-back). A *value* passed to `run()` (a closed
+set of modes with shared git behaviour), not a user-pluggable **provider**
+Protocol.
 _Avoid_: "branch mode", "git strategy".
 
 **Worktree**:
@@ -111,18 +113,29 @@ checkout of the **source branch** — untracked host files are absent until copi
 in.
 _Avoid_: "checkout", "clone", "scratch dir".
 
+**Durable worktree**:
+The **worktree** the `branch` **branch strategy** keeps on disk across **runs**
+as the named branch's working directory. Unlike a **preserved worktree** (kept
+because something went wrong), a durable worktree persists *by design* — there is
+no merge-back, the **agent**'s commits live on the named branch in it, and a
+later **run** targeting the same branch reuses it. Its path is surfaced on the
+result.
+_Avoid_: "persistent worktree", "named worktree", "preserved worktree" (that's
+the exception case, not this).
+
 **Source branch**:
 The branch the **agent** commits to *during* a **run**. For `head` it is the
 current branch; for `merge-to-head` it is the temporary scratch branch the
-**worktree** is on. Surfaced as the `source_branch` **prompt argument** and on
-the result.
+**worktree** is on; for `branch` it is the caller-named branch. Surfaced as the
+`source_branch` **prompt argument** and on the result.
 _Avoid_: "work branch", "feature branch", "temp branch" (that's only the
 merge-to-head case).
 
 **Target branch**:
 The branch the work lands on. For `head` it equals the **source branch**; for
 `merge-to-head` it is the **host**'s current branch the scratch branch merges
-into. This is what `RunResult.branch` and the `branch` **prompt argument**
+into; for `branch` it equals the **source branch** (the named branch — no
+merge-back). This is what `RunResult.branch` and the `branch` **prompt argument**
 report — where commits ended up.
 _Avoid_: "base branch", "destination branch".
 

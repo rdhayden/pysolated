@@ -87,13 +87,38 @@ structurally deferred until an isolated provider exists.
   asserts. The CLI is `no_sandbox`-only today, so the non-`no_sandbox` hard-error is
   a library-path guard.
 
+## Committed slice scope 2 (tracer bullet: `branch` named strategy + create-or-reuse)
+
+Settled in a grilling session (2026-06-19), the fast-follow after `merge-to-head`.
+The bullet proves *a run can place its work on a caller-named branch in a durable
+worktree that re-runs reuse*. See ADR 0008.
+
+- **`NamedBranchStrategy(branch=...)`**, third member of the `BranchStrategy`
+  union. Runs the agent in a **durable worktree** on the named branch; commits
+  stay there; **no merge-back**. source == target == the named branch.
+- **CLI:** `--branch-strategy branch` **requires** `--branch <name>`; `--branch`
+  with `head`/`merge-to-head` hard-errors (foreign-flag idiom). CLI == `run()`.
+- **Durable worktree**, distinct from a preserved worktree (ADR 0008): surfaced as
+  a new `RunResult.worktree_path` (always set for `branch`); `preserved_worktree_path`
+  stays the merge-to-head exception channel. Never both set; no orchestrator
+  strategy-special-casing.
+- **Worktree dir** `.pysolated/worktrees/<branch-slashes-as-dashes>` — deterministic
+  from the branch name so reuse recomputes + checks existence. Collision caveat
+  (`a/b` vs `a-b`) documented; hash-suffix is a later refinement.
+- **Create-or-checkout-or-reuse:** existing worktree → reuse (clean → log, dirty →
+  warn, never wiped); existing local branch → check out; else → create from `HEAD`.
+- **Clear error** when the named branch is already checked out in the main tree
+  (git forbids two worktrees on one branch).
+- **`no_sandbox`-only**, hard-erroring on other library providers like `merge-to-head`.
+
 ## Deferred out of the slice
 
-- **`branch` (named) strategy** + worktree **reuse-by-default** (Sandcastle ADR
-  0003) + **worktree locking** (Sandcastle ADR 0007). A temp worktree is created
-  fresh and deleted each `merge-to-head` run, so there is nothing to reuse or lock
-  against yet — reuse/locking land with the `branch` strategy and the standalone
-  handle.
+- **`origin` fast-forward refresh on reuse** (Sandcastle ADR 0003's second half)
+  and **explicit base ref** (`--base` / `baseBranch`). No remote story in pysolated
+  yet; base defaults to `HEAD`. See ADR 0008.
+- **Worktree locking** (Sandcastle ADR 0007) — the concurrent-access mitigation,
+  sequenced after reuse exactly as Sandcastle did. The gap (two runs sharing one
+  durable worktree) is documented; locking is the next slice. See ADR 0008.
 - **Standalone `createWorktree()` handle** (own/reuse a worktree across multiple
   `run()` calls) → [entry-points.md](./entry-points.md) territory; the bullet wires
   `branch_strategy=` into `run()` only.

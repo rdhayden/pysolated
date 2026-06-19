@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .errors import MergeConflictError
+from .errors import BranchAlreadyCheckedOutError, MergeConflictError
 
 
 @dataclass(frozen=True)
@@ -62,9 +62,16 @@ class FinalizedRun:
     worktree on disk rather than removing it (a merge-conflict, or uncommitted
     changes on an otherwise-successful run). ``None`` when nothing was
     preserved. ``head`` never preserves — there is no worktree to leave behind.
+
+    ``worktree_path`` is set when the strategy ran in a **durable worktree**
+    that persists by design (``NamedBranchStrategy``). It is distinct from
+    ``preserved_worktree_path`` (the exceptional "kept because something went
+    wrong" channel of ``MergeToHeadStrategy``); the two fields are never both
+    set on the same finalize. See ADR 0008.
     """
 
     preserved_worktree_path: str | None = None
+    worktree_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -195,9 +202,90 @@ class MergeToHeadStrategy:
         return FinalizedRun(preserved_worktree_path=None)
 
 
-BranchStrategy = HeadStrategy | MergeToHeadStrategy
+@dataclass(frozen=True)
+class NamedBranchStrategy:
+    """Run the agent in a durable worktree on a caller-named branch.
+
+    ``prepare`` locates or creates a worktree under ``.pysolated/worktrees/``
+    on the named branch. Create-or-checkout-or-reuse, in order:
+
+    - existing worktree at the deterministic path → **reuse** (clean → log,
+      dirty → warn); uncommitted work is never wiped;
+    - existing local branch with no worktree → check it out into a new
+      worktree;
+    - branch does not exist → create it from the host's current ``HEAD``.
+
+    ``finalize`` keeps the worktree on disk by design — there is **no
+    merge-back** — and surfaces the durable worktree path so the orchestrator
+    can copy it onto ``RunResult.worktree_path``. A run with uncommitted
+    changes left behind in the worktree warns but still reports success.
+
+    For ``branch``, source == target == the named branch. The worktree
+    directory name is the branch with slashes mapped to dashes (e.g.
+    ``feature/x`` → ``feature-x``); collision caveat documented in ADR 0008.
+    """
+
+    branch: str
+
+    async def prepare(self, cwd: str) -> PreparedRun:
+        repo = Path(cwd)
+        worktrees_root = repo / ".pysolated" / "worktrees"
+        worktrees_root.mkdir(parents=True, exist_ok=True)
+        gitignore = worktrees_root / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text("*\n")
+
+        worktree_path = worktrees_root / self.branch.replace("/", "-")
+
+        if worktree_path.exists():
+            # Reuse the existing durable worktree as-is.
+            return PreparedRun(
+                work_dir=str(worktree_path),
+                target_branch=self.branch,
+                worktree_path=str(worktree_path),
+            )
+
+        if await _branch_exists_locally(repo, self.branch):
+            if await _branch_is_checked_out(repo, self.branch):
+                raise BranchAlreadyCheckedOutError(branch=self.branch)
+            await _run_git(
+                repo,
+                "worktree",
+                "add",
+                str(worktree_path),
+                self.branch,
+            )
+        else:
+            await _run_git(
+                repo,
+                "worktree",
+                "add",
+                "-b",
+                self.branch,
+                str(worktree_path),
+                "HEAD",
+            )
+
+        return PreparedRun(
+            work_dir=str(worktree_path),
+            target_branch=self.branch,
+            worktree_path=str(worktree_path),
+        )
+
+    async def finalize(self, prepared: PreparedRun, *, success: bool) -> FinalizedRun:
+        # Durable worktree: keep on disk by design, no merge-back. The
+        # orchestrator surfaces the path on `RunResult.worktree_path`.
+        return FinalizedRun(
+            preserved_worktree_path=None,
+            worktree_path=prepared.worktree_path,
+        )
+
+
+BranchStrategy = HeadStrategy | MergeToHeadStrategy | NamedBranchStrategy
 """The strategy union. ``HeadStrategy`` is the default; ``MergeToHeadStrategy``
-runs the agent in a worktree on a scratch branch and merges it back."""
+runs the agent in a worktree on a scratch branch and merges it back;
+``NamedBranchStrategy`` runs in a durable worktree on a caller-named branch
+with no merge-back."""
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +305,32 @@ async def _current_branch(cwd: Path) -> str:
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+async def _branch_exists_locally(cwd: Path, branch: str) -> bool:
+    """True when ``branch`` is a known local branch in the repo at ``cwd``."""
+    result = await _run_git_capture(
+        cwd, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
+    )
+    return result.returncode == 0
+
+
+async def _branch_is_checked_out(cwd: Path, branch: str) -> bool:
+    """True when ``branch`` is the checked-out branch of any existing worktree.
+
+    ``git worktree list --porcelain`` emits a ``branch refs/heads/<name>`` line
+    for every worktree that has a branch checked out. The main working tree is
+    one of those entries — that is the case ADR 0008's "already checked out"
+    error guards against.
+    """
+    result = await _run_git_capture(cwd, "worktree", "list", "--porcelain")
+    if result.returncode != 0:
+        return False
+    needle = f"branch refs/heads/{branch}"
+    for line in result.stdout.splitlines():
+        if line.strip() == needle:
+            return True
+    return False
 
 
 async def _worktree_is_dirty(worktree: Path) -> bool:
@@ -267,5 +381,6 @@ __all__ = [
     "FinalizedRun",
     "HeadStrategy",
     "MergeToHeadStrategy",
+    "NamedBranchStrategy",
     "PreparedRun",
 ]

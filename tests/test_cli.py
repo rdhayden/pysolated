@@ -145,6 +145,119 @@ def test_cli_agent_execution_error_exits_1_with_diagnostic_on_stderr(
     assert "42" in result.output
 
 
+def test_cli_branch_strategy_branch_requires_branch_flag(monkeypatch: Any) -> None:
+    """`--branch-strategy branch` without `--branch <name>` exits 2."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["run", "--prompt", "go", "--branch-strategy", "branch"],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--branch" in result.output
+    # The engine must NOT have been called when arg parsing rejected it.
+    assert captured == {}
+
+
+def test_cli_branch_strategy_branch_with_branch_flag_passes_named_strategy(
+    monkeypatch: Any,
+) -> None:
+    """`--branch-strategy branch --branch X` builds NamedBranchStrategy(branch=X)."""
+    from pysolated import NamedBranchStrategy
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "--prompt",
+            "go",
+            "--branch-strategy",
+            "branch",
+            "--branch",
+            "feature/x",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    strategy = captured["branch_strategy"]
+    assert isinstance(strategy, NamedBranchStrategy)
+    assert strategy.branch == "feature/x"
+
+
+def test_cli_branch_flag_rejected_with_head_strategy(monkeypatch: Any) -> None:
+    """`--branch` with `--branch-strategy head` exits 2 (foreign-flag rejection)."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "--prompt",
+            "go",
+            "--branch-strategy",
+            "head",
+            "--branch",
+            "feature/x",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--branch" in result.output
+    assert captured == {}
+
+
+def test_cli_branch_flag_rejected_with_merge_to_head_strategy(monkeypatch: Any) -> None:
+    """`--branch` with `--branch-strategy merge-to-head` exits 2."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "--prompt",
+            "go",
+            "--branch-strategy",
+            "merge-to-head",
+            "--branch",
+            "feature/x",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--branch" in result.output
+    assert captured == {}
+
+
+def test_cli_default_branch_strategy_unchanged_head(monkeypatch: Any) -> None:
+    """Default branch strategy with no flags is still `head` (regression)."""
+    from pysolated import HeadStrategy
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli_module, "run_engine", _fake_engine_capturing_kwargs(captured)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["run", "--prompt", "go"])
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured["branch_strategy"], HeadStrategy)
+
+
 def test_cli_without_log_file_omits_flag(monkeypatch: Any) -> None:
     captured: dict = {}
     monkeypatch.setattr(

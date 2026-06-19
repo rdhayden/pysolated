@@ -28,7 +28,12 @@ from .sandboxes import (
     no_sandbox,
     remove_image as remove_image_helper,
 )
-from .worktrees import BranchStrategy, HeadStrategy, MergeToHeadStrategy
+from .worktrees import (
+    BranchStrategy,
+    HeadStrategy,
+    MergeToHeadStrategy,
+    NamedBranchStrategy,
+)
 from .sandboxes._images import _derive_default_image_name
 from .sandboxes.docker import (
     build_image as docker_build_image_helper,
@@ -60,14 +65,17 @@ _VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 
 # Valid `--branch-strategy` values. The CLI is a thin layer over `run()`; the
 # strategy name maps to the matching value-typed strategy below.
-_VALID_BRANCH_STRATEGIES = ("head", "merge-to-head")
+_VALID_BRANCH_STRATEGIES = ("head", "merge-to-head", "branch")
 
 
-def _build_branch_strategy(name: str) -> BranchStrategy:
+def _build_branch_strategy(name: str, *, branch: str | None) -> BranchStrategy:
     if name == "head":
         return HeadStrategy()
     if name == "merge-to-head":
         return MergeToHeadStrategy()
+    if name == "branch":
+        assert branch is not None  # validated upstream
+        return NamedBranchStrategy(branch=branch)
     # Validated upstream — defensive default.
     raise ValueError(f"unknown branch strategy {name!r}")
 
@@ -170,6 +178,14 @@ def run_command(
             "directly on the current branch (today's behaviour)."
         ),
     ),
+    branch: str | None = typer.Option(
+        None,
+        "--branch",
+        help=(
+            "Named branch for --branch-strategy branch (required for that "
+            "strategy; rejected with head/merge-to-head)."
+        ),
+    ),
 ) -> None:
     """Drive Claude Code on the host and print the result."""
     if prompt is None and prompt_file is None:
@@ -201,7 +217,19 @@ def run_command(
             err=True,
         )
         raise typer.Exit(code=2)
-    strategy = _build_branch_strategy(branch_strategy)
+    if branch_strategy == "branch" and branch is None:
+        typer.echo(
+            "error: --branch-strategy branch requires --branch <name>.", err=True
+        )
+        raise typer.Exit(code=2)
+    if branch_strategy != "branch" and branch is not None:
+        typer.echo(
+            f"error: --branch is only valid with --branch-strategy branch "
+            f"(got --branch-strategy {branch_strategy}).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    strategy = _build_branch_strategy(branch_strategy, branch=branch)
 
     try:
         agent_provider = build_agent(

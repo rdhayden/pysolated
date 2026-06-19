@@ -52,7 +52,12 @@ from .structured_output import (
     OutputDefinition,
     extract_structured_output,
 )
-from .worktrees import BranchStrategy, HeadStrategy, MergeToHeadStrategy
+from .worktrees import (
+    BranchStrategy,
+    HeadStrategy,
+    MergeToHeadStrategy,
+    NamedBranchStrategy,
+)
 
 DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
 DEFAULT_IDLE_TIMEOUT_SECONDS = 600.0
@@ -203,6 +208,11 @@ async def run(
             f"branch_strategy=MergeToHeadStrategy() requires the no_sandbox provider; "
             f"got sandbox={sandbox.name!r}"
         )
+    if isinstance(strategy, NamedBranchStrategy) and sandbox.name != "no-sandbox":
+        raise ValueError(
+            f"branch_strategy=NamedBranchStrategy(...) requires the no_sandbox provider; "
+            f"got sandbox={sandbox.name!r}"
+        )
 
     disp.intro(name or "pysolated")
 
@@ -332,6 +342,7 @@ async def run(
     # recovery path; the worktree + temp branch stay on disk untouched.
     finalized = await strategy.finalize(prepared, success=success)
     preserved_worktree_path = finalized.preserved_worktree_path
+    worktree_path = finalized.worktree_path
 
     if preserved_worktree_path is not None:
         disp.status(
@@ -348,6 +359,7 @@ async def run(
             matched_signal,
             commits,
             preserved_worktree_path,
+            worktree_path,
         ),
     )
 
@@ -363,6 +375,7 @@ async def run(
         output=extracted_output,
         log_file_path=log_file_path,
         preserved_worktree_path=preserved_worktree_path,
+        worktree_path=worktree_path,
     )
 
 
@@ -703,12 +716,15 @@ def _summary_rows(
     completion_signal: str | None,
     commits: list[str],
     preserved_worktree_path: str | None,
+    worktree_path: str | None = None,
 ) -> dict[str, str]:
     rows: dict[str, str] = {"Branch": branch or "(unknown)"}
     if source_branch and source_branch != branch:
         rows["Source branch"] = source_branch
     rows["Completion signal"] = completion_signal or "(none — max iterations)"
     rows["Commits"] = ", ".join(sha[:7] for sha in commits) if commits else "(none)"
+    if worktree_path is not None:
+        rows["Worktree"] = worktree_path
     if preserved_worktree_path is not None:
         rows["Preserved worktree"] = preserved_worktree_path
     if usage is None:
