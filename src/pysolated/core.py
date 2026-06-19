@@ -238,6 +238,12 @@ class RunResult(BaseModel):
 
     `log_file_path` is the resolved path of the log file when the run used the
     file display (`log_file=` on `run()`); `None` otherwise.
+
+    `branch` is the **target** branch — where commits land. For `head` it's
+    the current branch; for `merge-to-head` it's the host's current branch
+    the scratch branch merges into. `source_branch` is the branch the agent
+    committed *on* during the run. For `head` it equals `branch`; for
+    `merge-to-head` it's the temporary scratch branch.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -246,6 +252,7 @@ class RunResult(BaseModel):
     stdout: str
     text: str = ""
     branch: str
+    source_branch: str = ""
     usage: Usage | None = None
     completion_signal: str | None = None
     commits: list[str] = Field(default_factory=list)

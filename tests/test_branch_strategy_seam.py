@@ -1,0 +1,376 @@
+"""Orchestrator seam tests for the branch strategy.
+
+Verifies that ``run()`` routes through ``branch_strategy.prepare`` (before
+``sandbox.create()``) and ``branch_strategy.finalize`` (after ``sandbox.close()``),
+and that the ``source_branch`` plumbing — ``RunResult.source_branch`` plus the
+``{{source_branch}}`` prompt-template arg — is populated.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from typing import Callable
+
+import pytest
+
+from pysolated import (
+    AgentCommandOptions,
+    Command,
+    ExecResult,
+    HeadStrategy,
+    RunResult,
+    Severity,
+    no_sandbox,
+    parse_session_usage,
+    parse_stream_line,
+    run,
+)
+from pysolated.worktrees import FinalizedRun, PreparedRun
+
+
+class _RecordingStrategy:
+    """A strategy that records when prepare/finalize fired and what it saw.
+
+    Wraps an inner strategy so the seam wiring is exercised, but with
+    visibility for the test to assert on. The `events` list is a shared
+    timeline — the test passes the same list to the sandbox so the relative
+    order of prepare/create/close/finalize is observable.
+    """
+
+    def __init__(self, inner: HeadStrategy, events: list[str] | None = None) -> None:
+        self._inner = inner
+        self.events: list[str] = events if events is not None else []
+        self.prepared_with: str | None = None
+        self.finalize_success: bool | None = None
+
+    async def prepare(self, cwd: str) -> PreparedRun:
+        self.events.append("prepare")
+        self.prepared_with = cwd
+        return await self._inner.prepare(cwd)
+
+    async def finalize(self, *, success: bool) -> FinalizedRun:
+        self.events.append("finalize")
+        self.finalize_success = success
+        return await self._inner.finalize(success=success)
+
+
+class _EventOrderSandbox:
+    """A no_sandbox-ish fake that records create/close around the prepare/finalize bracket."""
+
+    name = "fake-sandbox"
+    env: dict[str, str] = {}
+
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        lines: list[str],
+        branch: str = "main",
+    ) -> None:
+        self._events = events
+        self._lines = lines
+        self._branch = branch
+
+    async def create(self, work_dir: str) -> "_EventOrderSandbox":
+        self._events.append("create")
+        return self
+
+    async def close(self) -> None:
+        self._events.append("close")
+
+    async def exec(
+        self,
+        argv: list[str],
+        *,
+        stdin: str | None = None,
+        cwd: str | None = None,
+        on_line: Callable[[str], None] | None = None,
+    ) -> ExecResult:
+        if argv[:2] == ["git", "rev-parse"] and "--abbrev-ref" in argv:
+            return ExecResult(exit_code=0, stdout=f"{self._branch}\n", stderr="")
+        if argv[:2] == ["git", "rev-parse"]:
+            return ExecResult(exit_code=0, stdout="deadbeef\n", stderr="")
+        if argv[:2] == ["git", "rev-list"]:
+            return ExecResult(exit_code=0, stdout="", stderr="")
+        for line in self._lines:
+            if on_line is not None:
+                on_line(line)
+        return ExecResult(exit_code=0, stdout="\n".join(self._lines), stderr="")
+
+
+class _FakeAgent:
+    name = "fake-agent"
+    env: dict[str, str] = {}
+
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
+        self.built_options: AgentCommandOptions | None = None
+
+    def build_command(self, options: AgentCommandOptions) -> Command:
+        self.built_options = options
+        return Command(argv=["fake-agent"], stdin=options.prompt)
+
+    def parse_stream_line(self, line: str):
+        return parse_stream_line(line)
+
+    def parse_session_usage(self, content: str):
+        return parse_session_usage(content)
+
+
+class _SilentDisplay:
+    def intro(self, title: str) -> None: ...
+    def status(self, message: str, severity: Severity) -> None: ...
+    def text(self, message: str) -> None: ...
+    def tool_call(self, name: str, formatted_args: str) -> None: ...
+    def summary(self, title: str, rows: dict[str, str]) -> None: ...
+
+
+def _hello_line() -> str:
+    return json.dumps(
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}
+    )
+
+
+async def test_prepare_runs_before_create_and_finalize_after_close() -> None:
+    """The strategy brackets the sandbox lifetime: prepare→create→close→finalize."""
+    events: list[str] = []
+    sandbox = _EventOrderSandbox(events, lines=[_hello_line()])
+    strategy = _RecordingStrategy(HeadStrategy(), events=events)
+
+    await run(
+        agent=_FakeAgent([_hello_line()]),
+        sandbox=sandbox,
+        prompt="go",
+        cwd="/repo",
+        display=_SilentDisplay(),
+        branch_strategy=strategy,
+    )
+
+    # The bracket: prepare must precede sandbox.create, and finalize must
+    # follow sandbox.close — exactly once each.
+    assert events.index("prepare") < events.index("create")
+    assert events.index("close") < events.index("finalize")
+    assert events.count("prepare") == 1
+    assert events.count("finalize") == 1
+
+
+async def test_default_strategy_is_head_when_unspecified() -> None:
+    """Calling run() with no branch_strategy uses HeadStrategy()."""
+    sandbox = _EventOrderSandbox([], lines=[_hello_line()])
+    result = await run(
+        agent=_FakeAgent([_hello_line()]),
+        sandbox=sandbox,
+        prompt="go",
+        cwd="/repo",
+        display=_SilentDisplay(),
+    )
+    # source_branch == branch (target) for head — the observable signature
+    # of the default having engaged.
+    assert result.source_branch == result.branch == "main"
+
+
+async def test_finalize_called_with_success_on_clean_run() -> None:
+    strategy = _RecordingStrategy(HeadStrategy())
+    sandbox = _EventOrderSandbox([], lines=[_hello_line()])
+    await run(
+        agent=_FakeAgent([_hello_line()]),
+        sandbox=sandbox,
+        prompt="go",
+        cwd="/repo",
+        display=_SilentDisplay(),
+        branch_strategy=strategy,
+    )
+    assert strategy.finalize_success is True
+
+
+async def test_finalize_called_with_failure_on_raise() -> None:
+    """A failing run still finalize()s — the strategy must run its cleanup."""
+
+    class _FailingSandbox(_EventOrderSandbox):
+        async def exec(
+            self,
+            argv: list[str],
+            *,
+            stdin: str | None = None,
+            cwd: str | None = None,
+            on_line: Callable[[str], None] | None = None,
+        ) -> ExecResult:
+            if argv[:2] == ["git", "rev-parse"] and "--abbrev-ref" in argv:
+                return ExecResult(exit_code=0, stdout="main\n", stderr="")
+            if argv[:2] == ["git", "rev-parse"]:
+                return ExecResult(exit_code=0, stdout="deadbeef\n", stderr="")
+            if argv[:2] == ["git", "rev-list"]:
+                return ExecResult(exit_code=0, stdout="", stderr="")
+            return ExecResult(exit_code=2, stdout="", stderr="boom")
+
+    strategy = _RecordingStrategy(HeadStrategy())
+    sandbox = _FailingSandbox([], lines=[])
+    with pytest.raises(Exception):
+        await run(
+            agent=_FakeAgent([]),
+            sandbox=sandbox,
+            prompt="go",
+            cwd="/repo",
+            display=_SilentDisplay(),
+            branch_strategy=strategy,
+        )
+    # finalize must have been called, with success=False.
+    assert strategy.events == ["prepare", "finalize"]
+    assert strategy.finalize_success is False
+
+
+async def test_iterations_run_in_work_dir_returned_by_prepare() -> None:
+    """The iteration loop runs in the work_dir prepare returns, not the original cwd.
+
+    For head, work_dir == cwd, so this is a degenerate check — but it pins the
+    contract that the merge-to-head impl will rely on.
+    """
+    sandbox = _EventOrderSandbox([], lines=[_hello_line()])
+    captured_cwds: list[str | None] = []
+
+    original_exec = sandbox.exec
+
+    async def recording_exec(
+        argv: list[str],
+        *,
+        stdin: str | None = None,
+        cwd: str | None = None,
+        on_line: Callable[[str], None] | None = None,
+    ) -> ExecResult:
+        captured_cwds.append(cwd)
+        return await original_exec(argv, stdin=stdin, cwd=cwd, on_line=on_line)
+
+    sandbox.exec = recording_exec  # type: ignore[method-assign]
+
+    await run(
+        agent=_FakeAgent([_hello_line()]),
+        sandbox=sandbox,
+        prompt="go",
+        cwd="/repo",
+        display=_SilentDisplay(),
+        branch_strategy=HeadStrategy(),
+    )
+    # Every exec call must have used /repo (the work_dir prepare returned).
+    assert captured_cwds and all(c == "/repo" for c in captured_cwds)
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "seed.txt").write_text("seed\n")
+    subprocess.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+class _NoopRealAgent:
+    """Emits the completion signal so the iteration ends without an agent process."""
+
+    name = "noop"
+    env: dict[str, str] = {}
+
+    def build_command(self, options: AgentCommandOptions) -> Command:
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": f"prompt={options.prompt} STOP"}
+                    ]
+                },
+            }
+        )
+        return Command(argv=["printf", "%s\n", line], stdin=None)
+
+    def parse_stream_line(self, line: str):
+        return parse_stream_line(line)
+
+    def parse_session_usage(self, content: str):
+        return parse_session_usage(content)
+
+
+async def test_source_branch_populated_on_run_result_for_head(git_repo: Path) -> None:
+    """For head, source_branch == branch (target) == the current branch."""
+    result = await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=HeadStrategy(),
+    )
+    assert isinstance(result, RunResult)
+    assert result.branch == "main"
+    assert result.source_branch == "main"
+
+
+async def test_head_run_creates_no_worktree_directory(git_repo: Path) -> None:
+    """The byte-for-byte head regression: no worktree dir should appear in cwd."""
+    await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+    )
+    # The bullet auto-writes .pysolated/worktrees/ only for merge-to-head.
+    # The head pass-through must not touch the user's tree.
+    assert not (git_repo / ".pysolated" / "worktrees").exists()
+
+
+async def test_default_run_matches_explicit_head_byte_for_byte(git_repo: Path) -> None:
+    """An explicit ``HeadStrategy()`` is observable-equivalent to omitting the arg.
+
+    Same branch, same source_branch, same commits, same completion signal.
+    """
+    default_result = await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+    )
+    explicit_result = await run(
+        agent=_NoopRealAgent(),
+        sandbox=no_sandbox(),
+        prompt="go",
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=HeadStrategy(),
+    )
+    assert default_result.branch == explicit_result.branch
+    assert default_result.source_branch == explicit_result.source_branch
+    assert default_result.completion_signal == explicit_result.completion_signal
+    assert default_result.commits == explicit_result.commits
+
+
+async def test_source_branch_available_in_prompt_template(
+    git_repo: Path, tmp_path: Path
+) -> None:
+    """`{{source_branch}}` resolves in a prompt template (head: == current branch)."""
+    template = tmp_path / "prompt.txt"
+    template.write_text("branch={{branch}} source={{source_branch}} STOP\n")
+    agent = _NoopRealAgent()
+
+    result = await run(
+        agent=agent,
+        sandbox=no_sandbox(),
+        prompt_file=str(template),
+        cwd=str(git_repo),
+        display=_SilentDisplay(),
+        completion_signal="STOP",
+        branch_strategy=HeadStrategy(),
+    )
+    # The agent echoes the resolved prompt back, so the stdout carries the values.
+    assert "branch=main" in result.stdout
+    assert "source=main" in result.stdout

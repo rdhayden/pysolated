@@ -94,6 +94,44 @@ hanging, not stuck). Reset by every subsequent output line so trailing data is
 still captured. Distinct from **idle timeout**, which fails the run.
 _Avoid_: "grace period" (too generic), "drain timeout".
 
+### Branching & worktrees
+
+**Branch strategy**:
+How a **run**'s git work is placed. `head` runs the **agent** directly on the
+current branch (no worktree); `merge-to-head` runs it in a **worktree** on a
+temporary scratch branch and merges that back to the current branch when the run
+ends. A *value* passed to `run()` (a closed set of modes with shared git
+behaviour), not a user-pluggable **provider** Protocol.
+_Avoid_: "branch mode", "git strategy".
+
+**Worktree**:
+A git worktree pysolated creates under `.pysolated/worktrees/` to isolate one
+**run**'s working directory from the **host**'s main checkout. Starts as a clean
+checkout of the **source branch** — untracked host files are absent until copied
+in.
+_Avoid_: "checkout", "clone", "scratch dir".
+
+**Source branch**:
+The branch the **agent** commits to *during* a **run**. For `head` it is the
+current branch; for `merge-to-head` it is the temporary scratch branch the
+**worktree** is on. Surfaced as the `source_branch` **prompt argument** and on
+the result.
+_Avoid_: "work branch", "feature branch", "temp branch" (that's only the
+merge-to-head case).
+
+**Target branch**:
+The branch the work lands on. For `head` it equals the **source branch**; for
+`merge-to-head` it is the **host**'s current branch the scratch branch merges
+into. This is what `RunResult.branch` and the `branch` **prompt argument**
+report — where commits ended up.
+_Avoid_: "base branch", "destination branch".
+
+**Preserved worktree**:
+A **worktree** pysolated leaves on disk instead of removing — because a
+merge-back conflicted or the worktree held uncommitted changes — so no work is
+lost. Its path is surfaced on the result.
+_Avoid_: "orphaned worktree", "leftover worktree".
+
 ### Prompts
 
 **Inline prompt**:
@@ -155,3 +193,18 @@ _Avoid_: "validator", "result schema".
 > signal, the idle timeout hands off to the completion timeout; when that grace
 > window expires we force-complete *successfully* with a warning. The idle timeout
 > only fires before any signal, and that one fails the run.
+>
+> **Dev:** If I don't want the agent committing straight onto my current branch?
+>
+> **Maintainer:** Use the `merge-to-head` branch strategy. We cut a worktree on a
+> throwaway scratch branch — that's the source branch — let the agent commit there,
+> then merge it back to your current branch, the target, and delete the scratch
+> branch. `RunResult.branch` is always the target, so it reads as "where my commits
+> ended up."
+>
+> **Dev:** And if the merge conflicts, or the agent left uncommitted changes?
+>
+> **Maintainer:** We don't throw anything away. On a conflict we abort the merge and
+> leave the worktree and its branch on disk; on a clean merge with leftover
+> uncommitted changes we still keep the worktree. Either way it's a preserved
+> worktree and its path comes back on the result so you can finish by hand.

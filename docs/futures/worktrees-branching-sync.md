@@ -18,3 +18,97 @@ the index.
   ref (ADR 0017) — moving code into the sandbox and pulling commits back out.
 - **Preserved worktree path** on the result when a successful run leaves
   uncommitted changes behind.
+
+---
+
+## Committed slice scope (tracer bullet: branch-strategy seam + `merge-to-head`)
+
+Settled in a grilling session (2026-06-19). The bullet proves *a run's git work
+can be placed via a selectable branch strategy* — the strategy seam plus **one**
+non-trivial strategy (**`merge-to-head`**, chosen because it stresses the seam
+hardest: temp-branch naming, worktree create, **running iterations in the worktree
+instead of `cwd`**, commit detection, merge-back, cleanup, and the conflict /
+dirty preservation paths). `branch` (named) and the standalone `createWorktree()`
+handle are fast-follow repetitions.
+
+**A key realization narrowed the slice:** all three current providers
+(`no_sandbox`, `podman`, `docker`) are **bind-mount style** — they mount the host
+repo. pysolated has **no isolated provider**, so **sync-in / sync-out and the
+sandbox-owned sync base ref (ADR 0017) have no provider to serve** and are
+structurally deferred until an isolated provider exists.
+
+- **Branch strategy is a value union, not a Protocol.** `HeadStrategy` |
+  `MergeToHeadStrategy` (frozen dataclasses), passed as `branch_strategy=` to
+  `run()` (default `HeadStrategy()` → today's behaviour byte-for-byte). Protocols
+  stay reserved for *user-pluggable* behaviour (ADR 0002/0003); a branch strategy
+  is a closed set of modes with shared git logic the user never reimplements. A
+  new `worktrees.py` holds that logic. See ADR 0007.
+- **Host-side strategy execution bracketing the sandbox lifetime.** Worktree git
+  (`git worktree add`, the merge-back, `git branch -D`) cannot run through the
+  `sandbox.exec` seam — the worktree must exist *before* `sandbox.create()` and the
+  merge happens *after* `close()`. The strategy exposes `prepare(cwd)` (host-side,
+  pre-create: resolve target branch + create worktree, return the work dir +
+  source/target branches + pre-run HEAD) and `finalize(success)` (host-side,
+  post-close: merge back, collect commits, decide preservation). `head` is the
+  trivial impl (work dir = `cwd`, no worktree, no merge). This is the orchestrator
+  rewiring every future strategy depends on. See ADR 0007.
+- **`no_sandbox` only.** The bullet proves the seam + worktree lifecycle +
+  orchestrator rewiring on the host path. On `no_sandbox` the worktree still
+  delivers real value: working-directory isolation, scratch-branch hygiene, and
+  the auto-merge-back workflow — all testable without containers. `merge-to-head`
+  with a non-`no_sandbox` *library* provider **hard-errors** up front (mirrors the
+  agent slice's foreign-flag rejections).
+- **Branch semantics.** `branch` (existing prompt arg + `RunResult.branch`) means
+  the **target** — where work lands (`head`: the current branch, unchanged;
+  `merge-to-head`: the host branch). A new built-in **`source_branch`** (+
+  `RunResult.source_branch`) is the branch the agent commits on (`head`: current
+  branch; `merge-to-head`: the temp branch). No separate `target_branch` key —
+  `branch` already is the target (one name per concept).
+- **Worktrees live in-repo at `.pysolated/worktrees/`**, mirroring Sandcastle's
+  `.sandcastle/worktrees/`. The bullet auto-writes `.pysolated/worktrees/.gitignore`
+  (`*`) so the managed runtime state doesn't surface as untracked noise in the
+  git-tracked `.pysolated/` scaffold dir, and so a worktree nested under the main
+  tree isn't treated as an untracked nested checkout.
+- **Temp branch naming:** `pysolated/<YYYYMMDD-HHMMSS>-<rand>` (random suffix
+  avoids second-granularity collisions, per Sandcastle ADR 0018).
+- **Failure / preservation contract (data-safety core):**
+  - Clean run + merge succeeds → `git merge <temp>` into target, `git branch -D
+    <temp>`, remove worktree. `RunResult.commits` = merged SHAs.
+  - Merge conflict → `git merge --abort`, **preserve** worktree + temp branch,
+    raise a new `MergeConflictError` carrying the worktree path + recovery commands
+    (`cd <worktree>` / `git merge <temp>` / `git branch -D <temp>`). No conflict
+    markers left in the user's tree.
+  - Uncommitted changes left in the worktree on an otherwise-successful run →
+    **preserve** the worktree, surface its path, warn. Never delete uncommitted work.
+  - `RunResult.preserved_worktree_path: str | None` carries the path in both
+    preserve cases.
+- **CLI surface:** new `--branch-strategy {head,merge-to-head}` on `run_command`
+  (default `head` → today's behaviour). Keeps the CLI == `run()` parity `cli.py`
+  asserts. The CLI is `no_sandbox`-only today, so the non-`no_sandbox` hard-error is
+  a library-path guard.
+
+## Deferred out of the slice
+
+- **`branch` (named) strategy** + worktree **reuse-by-default** (Sandcastle ADR
+  0003) + **worktree locking** (Sandcastle ADR 0007). A temp worktree is created
+  fresh and deleted each `merge-to-head` run, so there is nothing to reuse or lock
+  against yet — reuse/locking land with the `branch` strategy and the standalone
+  handle.
+- **Standalone `createWorktree()` handle** (own/reuse a worktree across multiple
+  `run()` calls) → [entry-points.md](./entry-points.md) territory; the bullet wires
+  `branch_strategy=` into `run()` only.
+- **`copy_to_worktree=`** — a worktree is a clean `git checkout`, so untracked host
+  files (`.env`, `node_modules`, build artifacts) are **absent** inside it. Copying
+  host paths into the fresh worktree before the agent runs (Sandcastle's
+  copy-on-write `cp --reflink` + timeout) is the natural fast-follow *because* this
+  slice introduces worktrees. The bullet documents the limitation rather than
+  closing the gap.
+- **Container (`podman`/`docker`) worktree wiring** — the bind-mount providers need
+  a mount-root-vs-exec-cwd split (mount the **repo root** so both `.git` and
+  `.git/worktrees/<name>` are visible — a worktree's `.git` is a *file* pointing
+  back into the main gitdir — while the agent's cwd is the worktree path), plus
+  SELinux `:z` labeling on the worktree path. A coherent self-contained follow-up
+  with its own risks; deferred so the bullet stays about the seam, exactly as the
+  Codex bullet shipped `no_sandbox`-only.
+- **Sync in / sync out + sandbox-owned sync base ref** (Sandcastle ADR 0017) —
+  no isolated provider exists to serve them. Returns when one does.

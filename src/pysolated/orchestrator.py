@@ -52,6 +52,7 @@ from .structured_output import (
     OutputDefinition,
     extract_structured_output,
 )
+from .worktrees import BranchStrategy, HeadStrategy
 
 DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
 DEFAULT_IDLE_TIMEOUT_SECONDS = 600.0
@@ -128,6 +129,7 @@ async def run(
     idle_warning_interval_seconds: float = DEFAULT_IDLE_WARNING_INTERVAL_SECONDS,
     output: OutputDefinition | None = None,
     signal: asyncio.Event | None = None,
+    branch_strategy: BranchStrategy | None = None,
 ) -> RunResult:
     """Drive an agent through `max_iterations` and return a frozen `RunResult`.
 
@@ -180,7 +182,7 @@ async def run(
             "display= and log_file= are mutually exclusive — pass one or the other"
         )
 
-    work_dir = cwd or os.getcwd()
+    starting_cwd = cwd or os.getcwd()
     log_file_path: str | None = str(log_file) if log_file is not None else None
     disp: Display
     if display is not None:
@@ -190,8 +192,18 @@ async def run(
     else:
         disp = TerminalDisplay(name=name)
     signals = _normalize_signals(completion_signal)
+    strategy: BranchStrategy = branch_strategy or HeadStrategy()
 
     disp.intro(name or "pysolated")
+
+    # Strategy `prepare` runs host-side BEFORE the sandbox exists — a
+    # `merge-to-head` strategy creates its worktree here, and the work_dir
+    # passed to `sandbox.create()` is the worktree path, not `cwd`. For `head`
+    # this is a pass-through (work_dir == cwd). See ADR 0007.
+    prepared = await strategy.prepare(starting_cwd)
+    work_dir = prepared.work_dir
+
+    success = False
 
     # Create the live sandbox handle once and tear it down in `finally` no
     # matter how the run exits (success, exception, idle-timeout, abort,
@@ -202,14 +214,25 @@ async def run(
     atexit_cb = _register_atexit_close(handle)
     try:
         await _warn_if_not_git_repo(handle, work_dir, disp)
-        branch = await _current_branch(handle, work_dir)
+        source_branch = await _current_branch(handle, work_dir)
+        # The target is what `RunResult.branch` and the `{{branch}}` prompt
+        # arg report — where work *lands*. For `head` the strategy returns
+        # None and target == source; for `merge-to-head` the strategy pins it
+        # to the host's pre-run current branch.
+        target_branch = (
+            prepared.target_branch
+            if prepared.target_branch is not None
+            else source_branch
+        )
         pre_run_head = await _head_sha(handle, work_dir)
 
         resolved_prompt = await resolve_prompt(
             inline=prompt,
             file=prompt_file,
             user_args=prompt_args,
-            built_in_args=_built_in_prompt_args(branch),
+            built_in_args=_built_in_prompt_args(
+                branch=target_branch, source_branch=source_branch
+            ),
             executor=_make_prompt_executor(handle, work_dir),
         )
         if output is not None:
@@ -268,14 +291,16 @@ async def run(
 
         disp.status("Run complete", "success")
         disp.summary(
-            "Run summary", _summary_rows(branch, usage, matched_signal, commits)
+            "Run summary", _summary_rows(target_branch, usage, matched_signal, commits)
         )
 
+        success = True
         return RunResult(
             iterations=iterations_done,
             stdout=stdout,
             text=prose,
-            branch=branch,
+            branch=target_branch,
+            source_branch=source_branch,
             usage=usage,
             completion_signal=matched_signal,
             commits=commits,
@@ -290,6 +315,14 @@ async def run(
             await handle.close()
         except Exception:  # pragma: no cover - teardown is best-effort
             pass
+        # `finalize` runs host-side AFTER the sandbox is closed — a
+        # `merge-to-head` strategy merges the scratch branch back here and
+        # decides preservation. For `head` it's a no-op. Best-effort: a
+        # teardown failure must not mask the real outcome.
+        try:
+            await strategy.finalize(success=success)
+        except Exception:  # pragma: no cover - teardown is best-effort
+            pass
 
 
 def _normalize_signals(
@@ -300,14 +333,17 @@ def _normalize_signals(
     return tuple(signal)
 
 
-def _built_in_prompt_args(branch: str) -> dict[str, str]:
+def _built_in_prompt_args(*, branch: str, source_branch: str) -> dict[str, str]:
     """The argument set pysolated always injects into prompt templates.
 
-    Minimum for v1: the current branch (empty string when not in a git repo,
-    matching `RunResult.branch`). Adding more built-ins later is purely
-    additive — callers cannot shadow these keys.
+    `branch` is the target — where commits land (= `RunResult.branch`).
+    `source_branch` is the branch the agent commits *on* during the run
+    (= `RunResult.source_branch`). For `head` they're equal; for
+    `merge-to-head` `source_branch` is the temp scratch branch. Both are the
+    empty string when the working dir isn't a git repo. Callers cannot shadow
+    these keys (the prompt layer raises on overlap).
     """
-    return {"branch": branch}
+    return {"branch": branch, "source_branch": source_branch}
 
 
 def _make_prompt_executor(sandbox: Sandbox, cwd: str) -> PromptExecutor:

@@ -75,6 +75,12 @@ from .structured_output import (
     StructuredOutputError,
     extract_structured_output,
 )
+from .worktrees import (
+    BranchStrategy,
+    FinalizedRun,
+    HeadStrategy,
+    PreparedRun,
+)
 
 __all__ = [
     # Entry point
@@ -126,6 +132,11 @@ __all__ = [
     "DEFAULT_IDLE_TIMEOUT_SECONDS",
     "DEFAULT_COMPLETION_TIMEOUT_SECONDS",
     "DEFAULT_IDLE_WARNING_INTERVAL_SECONDS",
+    # Branch strategies
+    "BranchStrategy",
+    "HeadStrategy",
+    "PreparedRun",
+    "FinalizedRun",
     # Value types
     "RunResult",
     "Usage",
