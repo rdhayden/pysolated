@@ -2,8 +2,8 @@ import asyncio
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from pysolated import run, claude_code
-from pysolated.sandboxes import docker
+from pysolated import run, codex
+from pysolated.sandboxes import docker, Mount
 
 # Load credentials from .pysolated/.env (gitignored) into the host environment
 # so _require_env can read them. The .env is never mounted into the sandbox;
@@ -28,7 +28,7 @@ def _require_env(name: str) -> str:
 
 async def main():
     result = await run(
-        agent=claude_code("claude-opus-4-7"),
+        agent=codex("gpt-5.5", effort="high"),
         sandbox=docker(
             image="pysolated:pysolated",
             env={
@@ -37,6 +37,13 @@ async def main():
                 "CLAUDE_CODE_OAUTH_TOKEN": _require_env("CLAUDE_CODE_OAUTH_TOKEN"),
                 "GH_TOKEN": _require_env("GH_TOKEN"),
             },
+            mounts=[
+                Mount(
+                    host_path=str(Path.home() / ".codex" / "auth.json"),
+                    sandbox_path="/home/agent/.codex/auth.json",
+                    readonly=True,
+                ),
+            ],
         ),
         prompt="say hi",
     )

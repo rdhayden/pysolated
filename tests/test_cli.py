@@ -425,7 +425,7 @@ def test_cli_docker_build_image_empty_key_errors(
 def test_cli_docker_build_image_custom_file_flag(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """`--file` overrides the Containerfile path."""
+    """`--file` overrides the Dockerfile path."""
     project = tmp_path / "demo"
     project.mkdir()
     monkeypatch.chdir(project)

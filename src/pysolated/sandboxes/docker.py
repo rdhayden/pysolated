@@ -268,7 +268,7 @@ class Docker:
 async def build_image(
     image: str,
     *,
-    containerfile: str = "Containerfile",
+    containerfile: str = "Dockerfile",
     context: str | None = None,
     build_args: dict[str, str] | None = None,
 ) -> ExecResult:

@@ -17,8 +17,8 @@ Why not use Sandcastle? If you are comfortable with Node or need to programatica
 
 ## Status
 
-v1 iteration lifecycle: one agent provider (`claude_code`), driven through
-`run()` and the `pysolated run` CLI. The run loops up to `max_iterations`,
+v1 iteration lifecycle: two agent providers (`claude_code` and `codex`), driven
+through `run()` and the `pysolated run` CLI. The run loops up to `max_iterations`,
 stops early on a **completion signal**, enforces an **idle timeout** and a
 post-signal **completion grace window**, reports the **commits** the agent
 made, supports **abort** via an `asyncio.Event` (or Ctrl-C from the CLI), and
@@ -62,6 +62,37 @@ result = await run(
     completion_timeout_seconds=60,     # grace window after the signal is seen
 )
 ```
+
+### Agent providers
+
+Two agent providers ship today. Both satisfy the same `AgentProvider` seam
+([ADR 0001](docs/adr/0001-agent-providers-return-argv.md)), so swapping between
+them is one constructor change in your `run()` call.
+
+**`claude_code(model, *, permission_mode=None)`** — drives the `claude` CLI.
+`model` defaults to `claude-opus-4-7`. Always emits
+`--dangerously-skip-permissions`; `permission_mode` maps to Claude's
+`--permission-mode`.
+
+**`codex(model, *, effort=None, env=None)`** — drives the `codex` CLI. `model`
+is **required** (Codex has no default). `effort` (`low|medium|high|xhigh`) tunes
+reasoning effort via a `model_reasoning_effort` TOML override. Always emits
+`--dangerously-bypass-approvals-and-sandbox`, symmetric with `claude_code`'s
+skip-permissions default.
+
+```python
+from pysolated import run, no_sandbox
+from pysolated.agents.codex import codex
+
+await run(
+    agent=codex("gpt-5-codex", effort="high"),
+    sandbox=no_sandbox(),
+    prompt="say hi",
+)
+```
+
+Both expose the same `effort`/`permission_mode` mismatch as errors: `effort` is
+rejected by `claude_code`, and `permission_mode` is rejected by `codex`.
 
 ### Sandbox providers
 
@@ -205,9 +236,9 @@ await run(
 )
 ```
 
-The **image contract is heavier than Podman's** because `--user`, the
-forthcoming `pysolated docker build-image` build-args, and the (forthcoming)
-pre-flight all depend on it. The user-provided Containerfile must:
+The **image contract is heavier than Podman's** because `--user`,
+`pysolated docker build-image` build-args, and the image preflight all depend
+on it. The user-provided Dockerfile must:
 
 ```dockerfile
 ARG AGENT_UID=1000
@@ -218,9 +249,9 @@ USER ${AGENT_UID}:${AGENT_GID}
 ```
 
 The `-o` flag lets alignment succeed when the host UID/GID collides with one
-already in the base image; the numeric `USER` is what makes the (forthcoming)
-pre-flight `{{.Config.User}}` check parseable. `git` + the agent CLI on
-`PATH`, writable `HOME=/home/agent`.
+already in the base image; the numeric `USER` is what makes the
+`{{.Config.User}}` preflight check parseable. `git` + the agent CLI on `PATH`,
+writable `HOME=/home/agent`.
 
 A missing image is caught up front: `create()` runs `docker image inspect
 <image>` as a preflight and raises `DockerImageNotFoundError` naming
@@ -435,9 +466,11 @@ The CLI is a thin Typer layer over the same `run()` engine. Flags:
 | `--prompt` | _(see below)_ | Inline prompt, sent to the agent verbatim. Mutually exclusive with `--prompt-file`; one is required. |
 | `--prompt-file` | _(see below)_ | Path to a prompt template. `{{KEY}}` placeholders are substituted from `--prompt-arg` overlaid on built-ins (`branch`); `` !`cmd` `` expressions are run through the sandbox and replaced by stdout. |
 | `--prompt-arg` | _(none)_ | `KEY=VALUE` argument for `--prompt-file`. Repeatable. Rejected when combined with `--prompt`. |
-| `--model` | `claude-opus-4-7` | Claude model to run. |
+| `--agent` | `claude-code` | Agent provider to drive. Registered names: `claude-code`, `codex`. |
+| `--model` | `claude-opus-4-7` (claude-code only) | Model id for the chosen agent. **Required** for `--agent codex` (no default). |
+| `--effort` | _(none)_ | Reasoning effort (`low\|medium\|high\|xhigh`). Accepted by `codex`; rejected by `claude-code`. |
 | `--cwd` | current dir | Repo directory to anchor the run to. |
-| `--permission-mode` | _(none)_ | Claude `--permission-mode`; mutually exclusive with skip-permissions. |
+| `--permission-mode` | _(none)_ | Claude `--permission-mode`; mutually exclusive with skip-permissions. Rejected by `--agent codex`. |
 | `--name` | _(none)_ | Optional name for the run. Appears as a `[name]` prefix on every status line and in the log file header. |
 | `--log-file` | _(none)_ | Write progress and agent output to this path instead of the terminal. `tail -f` shows live progress; `RunResult.log_file_path` reports the path. |
 | `--max-iterations` | `1` | Maximum agent invocations in the loop. |
@@ -470,6 +503,10 @@ uv run pysolated run \
   --prompt-file prompts/refactor.txt \
   --prompt-arg area=auth \
   --completion-signal DONE
+
+# drive Codex instead of Claude; --model is required, --effort is optional
+uv run pysolated run --agent codex --model gpt-5-codex --effort high \
+  --prompt "say hi"
 ```
 
 On completion the CLI prints the iteration count, the matched completion signal,
@@ -508,6 +545,43 @@ uv run pysolated podman remove-image --image my-agent:latest
 | `--image` | `pysolated:<sanitized-host-dirname>` | Image tag to remove. |
 
 Both exit non-zero (propagating Podman's exit code) and echo Podman's stderr
+when the underlying command fails.
+
+### Docker image lifecycle
+
+The `pysolated docker` subgroup manages the image the `docker(...)` sandbox
+runs. Like Podman, both subcommands default to the derived tag the provider
+uses — `pysolated:<sanitized-host-dirname>` — but Docker builds default to
+`Dockerfile` and auto-inject host UID/GID build args for ownership alignment.
+
+```bash
+# build ./Dockerfile to the derived tag
+uv run pysolated docker build-image
+
+# build a different Dockerfile to an explicit tag
+uv run pysolated docker build-image --file docker/Dockerfile --image my-agent:latest
+
+# remove the derived (or a named) image
+uv run pysolated docker remove-image
+uv run pysolated docker remove-image --image my-agent:latest
+```
+
+**`pysolated docker build-image`** — runs `docker build -f <file> -t <tag> <cwd>`,
+with `AGENT_UID` and `AGENT_GID` build args auto-injected from the host:
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--file` / `-f` | `Dockerfile` | Dockerfile path passed to `docker build -f`. |
+| `--image` | `pysolated:<sanitized-host-dirname>` | Image tag to build. |
+| `--build-arg` | host `AGENT_UID` / `AGENT_GID` | Extra `docker build --build-arg KEY=VALUE`. Repeatable; explicit `AGENT_UID` or `AGENT_GID` values override the auto-injected defaults. |
+
+**`pysolated docker remove-image`** — the matching `docker rmi`:
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--image` | `pysolated:<sanitized-host-dirname>` | Image tag to remove. |
+
+Both exit non-zero (propagating Docker's exit code) and echo Docker's stderr
 when the underlying command fails.
 
 ## Architecture

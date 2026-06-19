@@ -722,10 +722,10 @@ def test_docker_explicit_image_still_wins() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_build_image_uses_default_containerfile(
+async def test_build_image_uses_default_dockerfile(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`build_image(tag)` with no `build_args` defaults to `-f Containerfile`, no `--build-arg`."""
+    """`build_image(tag)` with no `build_args` defaults to `-f Dockerfile`, no `--build-arg`."""
     monkeypatch.chdir(tmp_path)
     stub = _CLIStub()
     async with _patched(stub):
@@ -734,7 +734,7 @@ async def test_build_image_uses_default_containerfile(
         "docker",
         "build",
         "-f",
-        "Containerfile",
+        "Dockerfile",
         "-t",
         "pysolated:demo",
         str(tmp_path),

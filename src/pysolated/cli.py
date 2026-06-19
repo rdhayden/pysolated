@@ -300,10 +300,10 @@ def podman_remove_image_command(
 @docker_app.command("build-image")
 def docker_build_image_command(
     file: str = typer.Option(
-        "Containerfile",
+        "Dockerfile",
         "--file",
         "-f",
-        help="Containerfile path passed to `docker build -f`.",
+        help="Dockerfile path passed to `docker build -f`.",
     ),
     image: str | None = typer.Option(
         None,
