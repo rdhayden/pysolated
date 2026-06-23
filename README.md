@@ -27,6 +27,51 @@ agent's prose. Three sandbox providers ship: `no_sandbox` (no isolation —
 host subprocess), `podman` (rootless container with a same-path repo bind
 mount — real isolation, see below), and `docker` (Podman's sibling for
 Docker-only hosts; mirrors Podman everywhere the two engines agree).
+`pysolated init` scaffolds a ready-to-run config directory for any of the
+agent × sandbox combos, so a new project reaches a sandboxed run without
+hand-writing the driver or the Containerfile.
+
+## Getting started
+
+`pysolated init` scaffolds a **config directory** (`.pysolated/`) into your repo
+so a project goes from zero to a sandboxed agent without hand-writing the glue.
+It's an interactive wizard: it prompts for any choice you don't pass as a flag,
+then writes the **driver**, the prompt template, the Containerfile, and the env
+files for the chosen agent × sandbox combo.
+
+```bash
+# interactive — prompts for the agent and the sandbox
+uv run pysolated init
+
+# or pass both choices up front (fully non-interactive)
+uv run pysolated init --agent claude-code --sandbox podman
+```
+
+The agent axis is `claude-code` or `codex`; the sandbox axis is `podman` or
+`docker` — any of the four combos. `init` writes a `.pysolated/` containing:
+
+| File | What it is |
+| --- | --- |
+| `main.py` | The **driver** — a single configured `run()` call you edit to taste. Loads credentials from `.env` and passes them explicitly to the sandbox. |
+| `prompt.md` | A skeleton **prompt template** (`{{KEY}}` substitution + `` !`cmd` `` expansion). |
+| `Containerfile` / `Dockerfile` | The image the sandbox runs. `Containerfile` for podman, `Dockerfile` for docker. |
+| `.env.example` | The credential keys the chosen agent needs (e.g. `CLAUDE_CODE_OAUTH_TOKEN` for claude-code, `OPENAI_API_KEY` for codex). |
+| `.gitignore` | Ignores `.env`, so credentials never get committed. |
+
+`init` then prints the remaining three steps:
+
+```bash
+cp .pysolated/.env.example .pysolated/.env   # then fill in your credentials
+uv run pysolated podman build-image          # build the scaffolded image
+python .pysolated/main.py                    # run the driver
+```
+
+The agent runs inside the sandbox against your repo (bind-mounted at the same
+path) and its commits land back on the host. Because podman keep-id and docker
+host-UID alignment match the in-container user to your host user, files the
+agent writes are owned by you with no `EACCES`. `init` refuses to overwrite an
+existing `.pysolated/`. See [Project scaffolding (init)](#project-scaffolding-init)
+for the full flag reference.
 
 ## Library
 
@@ -511,6 +556,35 @@ uv run pysolated run --agent codex --model gpt-5-codex --effort high \
 
 On completion the CLI prints the iteration count, the matched completion signal,
 the commits the agent made, and token usage.
+
+### Project scaffolding (init)
+
+`pysolated init` scaffolds the `.pysolated/` config directory for an
+agent × sandbox combo (see [Getting started](#getting-started)). It's a
+tri-state wizard per choice: a flag wins when given; an omitted flag prompts
+interactively in a terminal; an omitted flag with no TTY exits `2` naming the
+missing flag, so all-flags invocations stay fully headless and scriptable.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--agent` | _(prompted)_ | Agent to wire into the driver: `claude-code` or `codex`. Prompted when omitted in a terminal; **required** in non-interactive mode. |
+| `--sandbox` | _(prompted)_ | Sandbox to wire into the driver: `podman` or `docker`. Prompted when omitted in a terminal; **required** in non-interactive mode. |
+| `--model` | the agent's default | Model id baked into the driver. Defaults to `claude-opus-4-7` for `claude-code` and `gpt-5-codex` for `codex`. |
+| `--cwd` | current dir | Repo directory the `.pysolated/` config directory is created in. |
+
+`init` exits `2` if a passed `--agent`/`--sandbox` is unregistered, and exits
+`1` if `.pysolated/` already exists (it never overwrites).
+
+```bash
+# interactive wizard — prompts for whatever you don't pass
+uv run pysolated init
+
+# headless: both choices as flags (no prompts, scriptable)
+uv run pysolated init --agent codex --sandbox docker
+
+# override the model baked into the driver
+uv run pysolated init --agent claude-code --sandbox podman --model claude-opus-4-8
+```
 
 ### Podman image lifecycle
 
