@@ -314,6 +314,15 @@ def run_command(
     except PromptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2)
+    except ValueError as exc:
+        # Up-front configuration/validation errors raised by run() before the
+        # agent starts — e.g. a bad `--copy-to-worktree` path (missing,
+        # absolute, or `..`-escaping) or an incompatible strategy/sandbox
+        # combination. These are usage errors, so they exit 2 with a clean
+        # message rather than leaking a traceback, mirroring PromptError and
+        # the other arg-validation rejections above.
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
     except (
         AgentExecutionError,
         BranchAlreadyCheckedOutError,

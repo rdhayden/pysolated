@@ -174,6 +174,43 @@ def test_cli_branch_already_checked_out_error_exits_1_without_traceback(
     assert isinstance(result.exception, SystemExit)
 
 
+def test_cli_copy_to_worktree_validation_error_exits_2_without_traceback(
+    monkeypatch: Any,
+) -> None:
+    """A bad `--copy-to-worktree` path exits 2 with a clean message, no traceback.
+
+    `run()` validates copy paths up front and raises a plain `ValueError`
+    (missing / absolute / `..`-escaping source). The CLI must surface that as
+    an `error: ...` usage error on stderr and exit 2 — not let it propagate as
+    an uncaught Rich traceback.
+    """
+
+    async def validation_failing_engine(**kwargs: Any) -> RunResult:
+        raise ValueError("copy_to_worktree path does not exist in cwd: 'nope'")
+
+    monkeypatch.setattr(cli_module, "run_engine", validation_failing_engine)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "--prompt",
+            "go",
+            "--branch-strategy",
+            "merge-to-head",
+            "--copy-to-worktree",
+            "nope",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "error:" in result.output
+    assert "does not exist" in result.output
+    # Clean exit — the message reaches the user without a propagated traceback.
+    assert "Traceback" not in result.output
+    assert isinstance(result.exception, SystemExit)
+
+
 def test_cli_branch_strategy_branch_requires_branch_flag(monkeypatch: Any) -> None:
     """`--branch-strategy branch` without `--branch <name>` exits 2."""
     captured: dict = {}
