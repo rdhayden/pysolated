@@ -471,6 +471,26 @@ def test_cli_podman_build_image_default_containerfile(
     ]
 
 
+def test_cli_podman_build_image_uses_scaffolded_containerfile_by_default(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """After `pysolated init`, the no-flag build command uses `.pysolated/Containerfile`."""
+    project = tmp_path / "demo"
+    config = project / ".pysolated"
+    config.mkdir(parents=True)
+    (config / "Containerfile").write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+    calls, fake = _fake_subprocess_recorder()
+    monkeypatch.setattr(_podman_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["podman", "build-image"])
+    assert result.exit_code == 0, result.output
+    argv = calls[0]
+    i = argv.index("-f")
+    assert argv[i + 1] == ".pysolated/Containerfile"
+
+
 def test_cli_podman_build_image_custom_file_flag(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -596,6 +616,28 @@ def test_cli_docker_build_image_auto_injects_host_uid_gid(
     assert "AGENT_GID=1501" in pairs
     # The derived tag and the cwd context still come through.
     assert argv[-3:] == ["-t", "pysolated:demo", str(project)]
+
+
+def test_cli_docker_build_image_uses_scaffolded_dockerfile_by_default(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """After `pysolated init`, the no-flag build command uses `.pysolated/Dockerfile`."""
+    project = tmp_path / "demo"
+    config = project / ".pysolated"
+    config.mkdir(parents=True)
+    (config / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(_docker_module, "_resolve_host_uid", lambda: 1500)
+    monkeypatch.setattr(_docker_module, "_resolve_host_gid", lambda: 1501)
+    calls, fake = _fake_docker_subprocess_recorder()
+    monkeypatch.setattr(_docker_module, "_stream_subprocess", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.app, ["docker", "build-image"])
+    assert result.exit_code == 0, result.output
+    argv = calls[0]
+    i = argv.index("-f")
+    assert argv[i + 1] == ".pysolated/Dockerfile"
 
 
 def test_cli_docker_build_image_explicit_build_arg_overrides_auto(

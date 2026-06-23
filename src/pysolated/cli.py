@@ -127,6 +127,16 @@ def _build_branch_strategy(name: str, *, branch: str | None) -> BranchStrategy:
     raise ValueError(f"unknown branch strategy {name!r}")
 
 
+def _resolve_build_file(file: str | None, *, default_name: str) -> str:
+    if file is not None:
+        return file
+    root_default = Path(default_name)
+    scaffolded_default = Path(".pysolated") / default_name
+    if not root_default.exists() and scaffolded_default.exists():
+        return str(scaffolded_default)
+    return default_name
+
+
 @app.callback()
 def _root() -> None:
     """pysolated — orchestrate Claude Code via run().
@@ -492,11 +502,14 @@ def run_command(
 
 @podman_app.command("build-image")
 def podman_build_image_command(
-    file: str = typer.Option(
-        "Containerfile",
+    file: str | None = typer.Option(
+        None,
         "--file",
         "-f",
-        help="Containerfile path passed to `podman build -f`.",
+        help=(
+            "Containerfile path passed to `podman build -f`. Defaults to "
+            "`.pysolated/Containerfile` when present, otherwise `Containerfile`."
+        ),
     ),
     image: str | None = typer.Option(
         None,
@@ -506,14 +519,15 @@ def podman_build_image_command(
 ) -> None:
     """Build the Podman image used by `podman(...)`."""
     tag = image if image is not None else _derive_default_image_name()
-    result = asyncio.run(build_image_helper(tag, containerfile=file))
+    containerfile = _resolve_build_file(file, default_name="Containerfile")
+    result = asyncio.run(build_image_helper(tag, containerfile=containerfile))
     if result.exit_code != 0:
         typer.echo(
             result.stderr.strip() or f"podman build failed ({result.exit_code})",
             err=True,
         )
         raise typer.Exit(code=result.exit_code)
-    typer.echo(f"Built {tag} from {file}")
+    typer.echo(f"Built {tag} from {containerfile}")
 
 
 @podman_app.command("remove-image")
@@ -537,11 +551,14 @@ def podman_remove_image_command(
 
 @docker_app.command("build-image")
 def docker_build_image_command(
-    file: str = typer.Option(
-        "Dockerfile",
+    file: str | None = typer.Option(
+        None,
         "--file",
         "-f",
-        help="Dockerfile path passed to `docker build -f`.",
+        help=(
+            "Dockerfile path passed to `docker build -f`. Defaults to "
+            "`.pysolated/Dockerfile` when present, otherwise `Dockerfile`."
+        ),
     ),
     image: str | None = typer.Option(
         None,
@@ -570,8 +587,11 @@ def docker_build_image_command(
         raise typer.Exit(code=2)
 
     tag = image if image is not None else _derive_default_image_name()
+    containerfile = _resolve_build_file(file, default_name="Dockerfile")
     result = asyncio.run(
-        docker_build_image_helper(tag, containerfile=file, build_args=build_args)
+        docker_build_image_helper(
+            tag, containerfile=containerfile, build_args=build_args
+        )
     )
     if result.exit_code != 0:
         typer.echo(
@@ -579,7 +599,7 @@ def docker_build_image_command(
             err=True,
         )
         raise typer.Exit(code=result.exit_code)
-    typer.echo(f"Built {tag} from {file}")
+    typer.echo(f"Built {tag} from {containerfile}")
 
 
 @docker_app.command("remove-image")
