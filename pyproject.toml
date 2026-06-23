@@ -4,12 +4,31 @@ version = "0.1.0"
 description = "A Python toolkit that orchestrates AI coding agents inside sandboxes via run()."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Robin Hayden", email = "robindalehayden@gmail.com" }]
+keywords = ["ai", "agents", "sandbox", "orchestration", "claude", "codex", "docker", "podman"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.7",
     "typer>=0.12",
     "rich>=13.7",
     "python-dotenv>=1.2.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/rdhayden/pysolated"
+Repository = "https://github.com/rdhayden/pysolated"
+Issues = "https://github.com/rdhayden/pysolated/issues"
 
 [project.scripts]
 pysolated = "pysolated.cli:app"
