@@ -6,16 +6,16 @@ for any not given as flags, in a TTY) and then calls this `scaffold()`. The
 tests target `scaffold()` directly; the wizard's all-flags path is the second
 test surface.
 
-This slice ships one agent × one sandbox — claude-code + podman. Each axis
-is a registry entry; new agents/sandboxes land additively in the 2×2
-widening (issue #46).
+This slice covers the agent × sandbox 2×2 — claude-code and codex on each of
+podman and docker. Each axis is a registry entry; new agents/sandboxes land
+additively.
 
 Per ADR 0011, the Containerfile is **composed** rather than shipped whole per
 agent: a per-sandbox base carries `{{ROOT_INSTALL}}` (before `USER`) and
 `{{USER_INSTALL}}` (after `USER`) slots filled by the per-agent install
 snippet. Claude Code's `curl` installer targets `$HOME/.local/bin`, so its
-snippet goes in the user slot; an agent that installs as root (codex —
-landing in #46) would fill the root slot.
+snippet goes in the user slot; codex installs as root via `npm i -g`, so its
+snippet goes in the root slot.
 
 Per ADR 0012, the scaffolded driver uses the same `{{KEY}}` substitution as
 the Containerfile (one uniform mechanism across every scaffolded file), and
@@ -127,8 +127,28 @@ _CLAUDE_CODE = _AgentInstall(
 )
 
 
+_CODEX = _AgentInstall(
+    import_name="codex",
+    factory_call="codex",
+    default_model="gpt-5-codex",
+    root_install=(
+        "RUN apt-get update && apt-get install -y nodejs npm \\\n"
+        " && npm install -g @openai/codex \\\n"
+        " && rm -rf /var/lib/apt/lists/*\n"
+        "\n"
+    ),
+    user_install="",
+    env_example=(
+        "# Codex authenticates via an OpenAI API key. Generate one at\n"
+        "# https://platform.openai.com/api-keys and paste it here.\n"
+        "OPENAI_API_KEY=\n"
+    ),
+)
+
+
 _AGENT_INSTALLS: dict[str, _AgentInstall] = {
     "claude-code": _CLAUDE_CODE,
+    "codex": _CODEX,
 }
 
 
@@ -159,8 +179,39 @@ _PODMAN_BASE = _SandboxBase(
 )
 
 
+_DOCKER_BASE = _SandboxBase(
+    import_name="docker",
+    factory_call="docker",
+    containerfile_name="Dockerfile",
+    template=(
+        "FROM python:3.13-bookworm\n"
+        "\n"
+        "RUN apt-get update && apt-get install -y \\\n"
+        "  git curl jq \\\n"
+        "  && rm -rf /var/lib/apt/lists/*\n"
+        "\n"
+        "ARG AGENT_UID=1000\n"
+        "ARG AGENT_GID=1000\n"
+        "\n"
+        "RUN groupadd -o -g ${AGENT_GID} agent \\\n"
+        " && useradd -o -u ${AGENT_UID} -g ${AGENT_GID} -m -d /home/agent agent\n"
+        "\n"
+        "{{ROOT_INSTALL}}"
+        'ENV PATH="/home/agent/.local/bin:$PATH"\n'
+        "\n"
+        "USER ${AGENT_UID}:${AGENT_GID}\n"
+        "\n"
+        "{{USER_INSTALL}}"
+        "WORKDIR /home/agent\n"
+        "\n"
+        'ENTRYPOINT ["sleep", "infinity"]\n'
+    ),
+)
+
+
 _SANDBOX_BASES: dict[str, _SandboxBase] = {
     "podman": _PODMAN_BASE,
+    "docker": _DOCKER_BASE,
 }
 
 

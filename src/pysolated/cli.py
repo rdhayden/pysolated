@@ -108,18 +108,12 @@ def init_command(
     agent: str = typer.Option(
         "claude-code",
         "--agent",
-        help=(
-            "Agent to wire into the scaffolded driver "
-            "(claude-code; codex lands in a follow-up slice)."
-        ),
+        help="Agent to wire into the scaffolded driver (claude-code|codex).",
     ),
     sandbox: str = typer.Option(
         "podman",
         "--sandbox",
-        help=(
-            "Sandbox to wire into the scaffolded driver "
-            "(podman; docker lands in a follow-up slice)."
-        ),
+        help="Sandbox to wire into the scaffolded driver (podman|docker).",
     ),
     model: str | None = typer.Option(
         None,

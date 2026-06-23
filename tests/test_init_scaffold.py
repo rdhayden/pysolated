@@ -20,6 +20,18 @@ def _claude_code_podman(model: str = "claude-opus-4-7") -> ScaffoldOptions:
     return ScaffoldOptions(agent="claude-code", sandbox="podman", model=model)
 
 
+def _codex_podman(model: str = "gpt-5-codex") -> ScaffoldOptions:
+    return ScaffoldOptions(agent="codex", sandbox="podman", model=model)
+
+
+def _claude_code_docker(model: str = "claude-opus-4-7") -> ScaffoldOptions:
+    return ScaffoldOptions(agent="claude-code", sandbox="docker", model=model)
+
+
+def _codex_docker(model: str = "gpt-5-codex") -> ScaffoldOptions:
+    return ScaffoldOptions(agent="codex", sandbox="docker", model=model)
+
+
 def test_scaffold_creates_config_directory_with_all_five_files(tmp_path: Path) -> None:
     scaffold(tmp_path, _claude_code_podman())
 
@@ -173,3 +185,138 @@ def test_prompt_md_is_written_as_skeleton(tmp_path: Path) -> None:
 
     text = (tmp_path / ".pysolated" / "prompt.md").read_text(encoding="utf-8")
     assert text.strip(), "prompt.md should not be empty"
+
+
+def test_scaffold_codex_podman_driver_imports_codex(tmp_path: Path) -> None:
+    scaffold(tmp_path, _codex_podman())
+
+    source = (tmp_path / ".pysolated" / "main.py").read_text(encoding="utf-8")
+    assert "codex" in source
+    assert "podman" in source
+
+
+def test_scaffold_codex_podman_env_example_carries_codex_credentials(
+    tmp_path: Path,
+) -> None:
+    scaffold(tmp_path, _codex_podman())
+
+    text = (tmp_path / ".pysolated" / ".env.example").read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY" in text
+
+
+def test_scaffold_codex_podman_installs_codex_before_user_directive(
+    tmp_path: Path,
+) -> None:
+    """Per ADR 0011, codex installs as root via `npm i -g` *before* `USER`."""
+    scaffold(tmp_path, _codex_podman())
+
+    text = (tmp_path / ".pysolated" / "Containerfile").read_text(encoding="utf-8")
+    user_pos = text.find("USER ")
+    install_pos = text.find("npm")
+    assert user_pos != -1, "missing USER directive"
+    assert install_pos != -1, "missing codex npm-install line"
+    assert install_pos < user_pos
+
+
+def test_scaffolded_codex_driver_compiles_into_a_real_module(tmp_path: Path) -> None:
+    import importlib.util
+
+    scaffold(tmp_path, _codex_podman())
+
+    driver_path = tmp_path / ".pysolated" / "main.py"
+    spec = importlib.util.spec_from_file_location(
+        "_scaffolded_codex_driver", driver_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert hasattr(module, "main")
+
+
+def test_scaffold_docker_writes_dockerfile_not_containerfile(tmp_path: Path) -> None:
+    """Per ADR 0011, the docker base ships as `Dockerfile`, not `Containerfile`."""
+    scaffold(tmp_path, _claude_code_docker())
+
+    config = tmp_path / ".pysolated"
+    assert (config / "Dockerfile").is_file()
+    assert not (config / "Containerfile").exists()
+
+
+def test_scaffold_docker_base_carries_agent_uid_build_args(tmp_path: Path) -> None:
+    """Per ADR 0005, the docker base declares AGENT_UID/AGENT_GID build-args."""
+    scaffold(tmp_path, _claude_code_docker())
+
+    text = (tmp_path / ".pysolated" / "Dockerfile").read_text(encoding="utf-8")
+    assert "ARG AGENT_UID" in text
+    assert "ARG AGENT_GID" in text
+
+
+def test_scaffold_docker_base_uses_numeric_user_directive(tmp_path: Path) -> None:
+    """Per ADR 0005, the docker base's `USER` must be numeric so the preflight can parse it."""
+    scaffold(tmp_path, _claude_code_docker())
+
+    text = (tmp_path / ".pysolated" / "Dockerfile").read_text(encoding="utf-8")
+    # The numeric form references the build-args, not a username like `USER agent`.
+    assert "USER ${AGENT_UID}" in text
+
+
+def test_scaffold_docker_claude_code_installs_after_numeric_user(
+    tmp_path: Path,
+) -> None:
+    scaffold(tmp_path, _claude_code_docker())
+
+    text = (tmp_path / ".pysolated" / "Dockerfile").read_text(encoding="utf-8")
+    user_pos = text.find("USER ${AGENT_UID}")
+    install_pos = text.find("claude.ai/install.sh")
+    assert user_pos != -1
+    assert install_pos != -1
+    assert install_pos > user_pos
+
+
+def test_scaffold_codex_docker_installs_codex_before_numeric_user(
+    tmp_path: Path,
+) -> None:
+    scaffold(tmp_path, _codex_docker())
+
+    text = (tmp_path / ".pysolated" / "Dockerfile").read_text(encoding="utf-8")
+    user_pos = text.find("USER ${AGENT_UID}")
+    install_pos = text.find("npm")
+    assert user_pos != -1
+    assert install_pos != -1
+    assert install_pos < user_pos
+
+
+def test_scaffold_docker_driver_imports_docker_factory(tmp_path: Path) -> None:
+    scaffold(tmp_path, _claude_code_docker())
+
+    source = (tmp_path / ".pysolated" / "main.py").read_text(encoding="utf-8")
+    assert "from pysolated import" in source
+    assert "docker" in source
+
+
+def test_scaffolded_docker_driver_compiles_into_a_real_module(tmp_path: Path) -> None:
+    import importlib.util
+
+    scaffold(tmp_path, _claude_code_docker())
+
+    driver_path = tmp_path / ".pysolated" / "main.py"
+    spec = importlib.util.spec_from_file_location(
+        "_scaffolded_docker_driver", driver_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert hasattr(module, "main")
+
+
+def test_scaffold_codex_docker_combines_codex_install_and_docker_uid_args(
+    tmp_path: Path,
+) -> None:
+    """The full 2×2 corner: codex install snippet + docker UID-align block."""
+    scaffold(tmp_path, _codex_docker())
+
+    text = (tmp_path / ".pysolated" / "Dockerfile").read_text(encoding="utf-8")
+    assert "ARG AGENT_UID" in text
+    assert "npm" in text
+    assert "{{" not in text
+    assert "}}" not in text

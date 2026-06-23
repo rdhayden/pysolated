@@ -1,8 +1,8 @@
 """CLI tests for `pysolated init` — the wizard's all-flags (headless) path.
 
-Wizard prompts are deferred to #48 (the tri-state slice). For now the CLI is
+Wizard prompts are deferred to #48 (the tri-state slice). The CLI is
 flag/default-driven and exercises `scaffold()` end-to-end through the Typer
-entry point.
+entry point across the agent × sandbox 2×2.
 """
 
 from __future__ import annotations
@@ -81,3 +81,53 @@ def test_init_model_flag_flows_into_scaffolded_driver(tmp_path: Path) -> None:
 
     driver = (tmp_path / ".pysolated" / "main.py").read_text(encoding="utf-8")
     assert "claude-sonnet-4-6" in driver
+
+
+def test_init_accepts_codex_agent_and_writes_codex_credentials(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["init", "--cwd", str(tmp_path), "--agent", "codex"],
+    )
+    assert result.exit_code == 0, result.output
+
+    env_example = (tmp_path / ".pysolated" / ".env.example").read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY" in env_example
+
+
+def test_init_codex_defaults_to_codex_default_model(tmp_path: Path) -> None:
+    """`--model` omitted should fall through to the codex agent's default."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["init", "--cwd", str(tmp_path), "--agent", "codex"],
+    )
+    assert result.exit_code == 0, result.output
+
+    driver = (tmp_path / ".pysolated" / "main.py").read_text(encoding="utf-8")
+    assert "gpt-5-codex" in driver
+
+
+def test_init_accepts_docker_sandbox_and_writes_dockerfile(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["init", "--cwd", str(tmp_path), "--sandbox", "docker"],
+    )
+    assert result.exit_code == 0, result.output
+
+    config = tmp_path / ".pysolated"
+    assert (config / "Dockerfile").is_file()
+    assert not (config / "Containerfile").exists()
+
+
+def test_init_docker_next_step_points_to_docker_build_image(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.app,
+        ["init", "--cwd", str(tmp_path), "--sandbox", "docker"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "pysolated docker build-image" in result.output
