@@ -155,8 +155,11 @@ _Avoid_: "string prompt", "dynamic prompt".
 **Prompt template**:
 A **prompt** sourced from a file. May contain `{{KEY}}` placeholders and
 `` !`command` `` **shell expressions**, resolved before the **prompt** reaches the
-**agent**.
-_Avoid_: "prompt file" (that's the input, not the concept).
+**agent**. Distinct from a **scaffold template** (which **init** writes); a
+**prompt template** is one file the **agent** reads, a **scaffold template** is a
+whole starting project.
+_Avoid_: "prompt file" (that's the input, not the concept), "template"
+(unqualified — collides with **scaffold template**).
 
 **Prompt argument**:
 A value that substitutes a `{{KEY}}` placeholder in a **prompt template**. Some are
@@ -185,6 +188,36 @@ _Avoid_: "result", "JSON output".
 The Pydantic model the caller passes alongside the tag name to parse and validate
 **structured output**.
 _Avoid_: "validator", "result schema".
+
+### Init & scaffolding
+
+**Init**:
+The command (`pysolated init`) that scaffolds a **config directory** into a repo
+so a project can start driving an **agent**. An interactive wizard that prompts
+for the choices it isn't given as flags, then writes the **driver**, **prompt
+template**, Containerfile, and env files. Flag present → use it; flag absent +
+terminal → prompt; flag absent + no terminal → fail naming the missing flag.
+_Avoid_: "setup", "bootstrap", "generate".
+
+**Config directory**:
+The `.pysolated/` directory **init** scaffolds and the project owns — holds the
+**driver**, the **prompt template**, the Containerfile, and `.env`/`.env.example`.
+_Avoid_: ".pysolated" (that's the path, not the concept), "config folder".
+
+**Scaffold template**:
+A named starting point **init** writes into the **config directory** (e.g.
+`blank`). Selects the shape of the **driver** and **prompt template** that get
+scaffolded. Distinct from a **prompt template** — see that entry.
+_Avoid_: "template" (unqualified — collides with **prompt template**), "preset".
+
+**Driver**:
+The project-owned `main.py` **init** scaffolds — composes **run()** into an
+orchestration (the loop already lives *inside* **run()** via **iterations** + the
+**completion signal**, so the **driver** is usually a single configured **run()**
+call the project then edits). The `main.ts`-equivalent; pysolated ships no library
+loop around **run()** because **run()** already is the loop.
+_Avoid_: "main script", "orchestration template" (it's the **driver**, the
+**scaffold template** is what writes it), "entry point".
 
 ## Example dialogue
 

@@ -54,8 +54,18 @@ else, so it lands last:
    has `{{KEY}}` substitution + `prompt_args` + `` !`command` `` expansion, so the
    command alone needs no standalone subsystem. There is no honest run-loop surface
    for it before init exists. → [init-scaffolding.md](./init-scaffolding.md)
-6. **Orchestration-template surface** — the `main.ts`-equivalent pysolated lacks.
-7. **`init` scaffolding** — composes 2–6 (incl. the issue-tracker registry from 5).
+6. ~~**Orchestration-template surface** — the `main.ts`-equivalent pysolated lacks.~~
+   **Folded into init (item 7)** (decided 2026-06-23). Sandcastle's `main.ts`
+   "orchestration template" is just a single configured `run()` call — the iteration
+   loop already lives *inside* `run()` (`max_iterations` + `completion_signal`), which
+   pysolated has shipped. So item 6 has **no new library surface** (no `run_loop()` —
+   that would re-implement `run()`); it is a scaffolded, user-owned template *artifact*,
+   and an artifact only exists to be written by init. Same situation that folded item 5.
+   The `while True` + HITL pause in pysolated's dogfood `.pysolated/main.py` is a
+   divergence *beyond* Sandcastle's `simple-loop` template (which has neither).
+   → [init-scaffolding.md](./init-scaffolding.md)
+7. **`init` scaffolding** — composes 2–6 (incl. the issue-tracker registry from 5 and
+   the orchestration template from 6). **The next feature.**
    → [init-scaffolding.md](./init-scaffolding.md)
 
 pysolated went **Podman-first** (rootless + keep-id is the stronger isolation story

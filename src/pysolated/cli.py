@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import signal as os_signal
+from pathlib import Path
 
 import typer
 
@@ -20,6 +21,14 @@ from .errors import (
     BranchAlreadyCheckedOutError,
     IdleTimeoutError,
     MergeConflictError,
+)
+from .init import (
+    ScaffoldExistsError,
+    ScaffoldOptions,
+    agent_names,
+    default_model_for,
+    sandbox_names,
+    scaffold as scaffold_config_dir,
 )
 from .orchestrator import (
     DEFAULT_COMPLETION_SIGNAL,
@@ -92,6 +101,83 @@ def _root() -> None:
     A no-op callback so Typer keeps `run` as an explicit subcommand
     (`pysolated run ...`) rather than collapsing it into the bare command.
     """
+
+
+@app.command(name="init")
+def init_command(
+    agent: str = typer.Option(
+        "claude-code",
+        "--agent",
+        help=(
+            "Agent to wire into the scaffolded driver "
+            "(claude-code; codex lands in a follow-up slice)."
+        ),
+    ),
+    sandbox: str = typer.Option(
+        "podman",
+        "--sandbox",
+        help=(
+            "Sandbox to wire into the scaffolded driver "
+            "(podman; docker lands in a follow-up slice)."
+        ),
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help=(
+            "Model id baked into the scaffolded driver. "
+            "Defaults to the chosen agent's default model."
+        ),
+    ),
+    cwd: str | None = typer.Option(
+        None,
+        "--cwd",
+        help="Repo directory the .pysolated/ config dir is created in.",
+    ),
+) -> None:
+    """Scaffold a `.pysolated/` config directory into the current repo.
+
+    Writes the **driver** (`main.py`), the skeleton **prompt template**
+    (`prompt.md`), the `Containerfile`, `.gitignore`, and `.env.example` for
+    the chosen agent × sandbox combo. Fails if `.pysolated/` already exists.
+    """
+    if agent not in agent_names():
+        valid = ", ".join(agent_names())
+        typer.echo(
+            f"error: --agent {agent!r} is not registered. Valid agents: {valid}.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if sandbox not in sandbox_names():
+        valid = ", ".join(sandbox_names())
+        typer.echo(
+            f"error: --sandbox {sandbox!r} is not registered. "
+            f"Valid sandboxes: {valid}.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    resolved_model = model if model is not None else default_model_for(agent)
+    repo_dir = Path(cwd) if cwd is not None else Path.cwd()
+
+    try:
+        scaffold_config_dir(
+            repo_dir,
+            ScaffoldOptions(agent=agent, sandbox=sandbox, model=resolved_model),
+        )
+    except ScaffoldExistsError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    config_dir = repo_dir / ".pysolated"
+    typer.echo(f"Scaffolded {config_dir}.")
+    typer.echo("Next steps:")
+    typer.echo(
+        f"  1. cp {config_dir / '.env.example'} {config_dir / '.env'} "
+        "and fill in your credentials"
+    )
+    typer.echo(f"  2. pysolated {sandbox} build-image")
+    typer.echo(f"  3. python {config_dir / 'main.py'}")
 
 
 @app.command(name="run")
