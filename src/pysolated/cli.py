@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import importlib
 import signal as os_signal
+import sys
 from pathlib import Path
 
 import typer
+from rich.prompt import Prompt
 
 from .agents import PermissionMode
 from .agents._registry import build_agent
@@ -82,6 +84,37 @@ _VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 _VALID_BRANCH_STRATEGIES = ("head", "merge-to-head", "branch")
 
 
+def _is_interactive() -> bool:
+    """Whether the CLI may render an interactive prompt.
+
+    A function (not an inline `sys.stdin.isatty()` call) so tests can flip
+    the answer without having to wrestle with whatever stream the Typer
+    runner has stitched in for `sys.stdin`.
+    """
+    return sys.stdin.isatty()
+
+
+def _resolve_choice(
+    *, value: str | None, flag_name: str, valid: list[str], prompt_label: str
+) -> str:
+    """Tri-state per-choice resolution for the `init` wizard (ADR 0010).
+
+    Flag present → return it; absent + TTY → prompt with rich; absent +
+    no TTY → exit 2 naming the missing flag so the all-flags path stays a
+    fully headless contract.
+    """
+    if value is not None:
+        return value
+    if not _is_interactive():
+        typer.echo(
+            f"error: {flag_name} is required in non-interactive mode "
+            "(no TTY detected).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return Prompt.ask(prompt_label, choices=valid, default=valid[0])
+
+
 def _build_branch_strategy(name: str, *, branch: str | None) -> BranchStrategy:
     if name == "head":
         return HeadStrategy()
@@ -105,15 +138,23 @@ def _root() -> None:
 
 @app.command(name="init")
 def init_command(
-    agent: str = typer.Option(
-        "claude-code",
+    agent: str | None = typer.Option(
+        None,
         "--agent",
-        help="Agent to wire into the scaffolded driver (claude-code|codex).",
+        help=(
+            "Agent to wire into the scaffolded driver (claude-code|codex). "
+            "Prompted interactively when omitted in a terminal; required "
+            "in non-interactive mode."
+        ),
     ),
-    sandbox: str = typer.Option(
-        "podman",
+    sandbox: str | None = typer.Option(
+        None,
         "--sandbox",
-        help="Sandbox to wire into the scaffolded driver (podman|docker).",
+        help=(
+            "Sandbox to wire into the scaffolded driver (podman|docker). "
+            "Prompted interactively when omitted in a terminal; required "
+            "in non-interactive mode."
+        ),
     ),
     model: str | None = typer.Option(
         None,
@@ -134,15 +175,20 @@ def init_command(
     Writes the **driver** (`main.py`), the skeleton **prompt template**
     (`prompt.md`), the `Containerfile`, `.gitignore`, and `.env.example` for
     the chosen agent × sandbox combo. Fails if `.pysolated/` already exists.
+
+    Per ADR 0010, `init` is an interactive wizard with a tri-state per
+    choice: a flag wins when given; an absent flag in a terminal triggers
+    a rich prompt; an absent flag in a non-TTY exits 2 naming the flag,
+    so all-flags invocations remain a fully headless path.
     """
-    if agent not in agent_names():
+    if agent is not None and agent not in agent_names():
         valid = ", ".join(agent_names())
         typer.echo(
             f"error: --agent {agent!r} is not registered. Valid agents: {valid}.",
             err=True,
         )
         raise typer.Exit(code=2)
-    if sandbox not in sandbox_names():
+    if sandbox is not None and sandbox not in sandbox_names():
         valid = ", ".join(sandbox_names())
         typer.echo(
             f"error: --sandbox {sandbox!r} is not registered. "
@@ -150,6 +196,19 @@ def init_command(
             err=True,
         )
         raise typer.Exit(code=2)
+
+    agent = _resolve_choice(
+        value=agent,
+        flag_name="--agent",
+        valid=agent_names(),
+        prompt_label="Select agent",
+    )
+    sandbox = _resolve_choice(
+        value=sandbox,
+        flag_name="--sandbox",
+        valid=sandbox_names(),
+        prompt_label="Select sandbox",
+    )
 
     resolved_model = model if model is not None else default_model_for(agent)
     repo_dir = Path(cwd) if cwd is not None else Path.cwd()
